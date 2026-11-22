@@ -146,8 +146,10 @@ SAMPLERS = {
 
 # Resolution presets as (height, width) for 16:9; other aspect ratios keep the pixel count.
 RESOLUTIONS = {
+    '360p': 352 * 640,
     '384p': 384 * 672,
     '448p': 448 * 800,
+    '480p': 480 * 864,
     '512p': 512 * 896,
     '576p': 576 * 1024,
     '640p': 640 * 1120,

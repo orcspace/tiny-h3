@@ -74,7 +74,7 @@ class Adapter:
 def _canonical(key: str) -> str:
     key = key.removeprefix('transformer.')
     # LakonLab names the pruned AdaLN's folded bias `linear.bias`; the checkpoint calls it `folded_bias`.
-    key = re.sub(r'(adaln_proj|norm_out)\.linear\.bias$', r'\1.folded_bias', key)
+    key = re.sub(r'(^|\.)(adaln_proj|norm_out)\.linear\.bias$', r'\1\2.folded_bias', key)
     for old, new in (('pixel_upsampler', 'dwd_pixel_refiner'), ('dwd_pixel_refiner.pixel_proj', 'dwd_pixel_refiner.pixel_embed'),
                      ('first_frame_pixel_proj_out', 'first_frame_dwd_linear_head'), ('pixel_proj_out', 'dwd_linear_head')):
         key = key.replace(old, new)

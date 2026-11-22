@@ -110,3 +110,46 @@ def test_dit_matches_diffusers(tiny, tmp_path, policy, tol):
     assert got_v.shape == ref_v.shape and got_a.shape == ref_a.shape
     assert _rel(got_v, ref_v) < tol, _rel(got_v, ref_v)
     assert _rel(got_a, ref_a) < tol, _rel(got_a, ref_a)
+
+
+class _FakeSpark:
+    """Dense attention behind the Spark interface with a random row permutation: the result must not change."""
+
+    def __init__(self, seq):
+        g = torch.Generator().manual_seed(7)
+        self.perm = torch.randperm(seq, generator=g)
+        self.inv = torch.empty_like(self.perm)
+        self.inv[self.perm] = torch.arange(seq)
+        self.calls = 0
+
+    def begin_step(self, req, t_index):
+        pass
+
+    def is_dense(self, layer, seq):
+        return layer == 0  # first layer dense, as Spark's default
+
+    def permutation(self):
+        return self.perm, self.inv
+
+    def __call__(self, q, k, v, layer, permuted=False):
+        from tinyh3.runtime.attention import attention
+        self.calls += 1
+        assert permuted and q.shape[1] == 4  # all heads at once
+        return attention(q, k, v, 'sdpa')
+
+
+def test_sparse_path_permutation_is_exact(tiny, tmp_path):
+    root, model = tiny
+    out = convert(root / 'base', root / 'adapter', None, tmp_path / 'store', policy='int8', device='cpu',
+                  with_text=False)
+    store = Store(out)
+    geom, layout, vrows, arows, enc, t_unique, t_index = _inputs(model)
+    text_states = refine(store, enc, 'cpu')
+    base = DiT(store, device='cpu', head_group=2)
+    req = Request(layout, torch.device('cpu'), base.cfg)
+    want_v, want_a, _ = base.forward(req, vrows, arows, text_states, t_unique, t_index)
+    fake = _FakeSpark(layout.seq)
+    sparse = DiT(store, device='cpu', head_group=2, spark=fake)
+    got_v, got_a, _ = sparse.forward(req, vrows, arows, text_states, t_unique, t_index)
+    assert fake.calls == 2
+    assert _rel(got_v, want_v) < 2e-2 and _rel(got_a, want_a) < 2e-2

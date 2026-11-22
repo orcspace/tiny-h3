@@ -70,9 +70,22 @@ def adaln_tables(w: dict, temb: torch.Tensor, hidden: int = DIT.hidden_size):
     return [t.contiguous() for t in m.chunk(6, dim=-1)]
 
 
-def self_attention(xq, xs, w, L, rope, *, heads, head_dim, head_group, eps, backend, out_dtype=BF16):
+def self_attention(xq, xs, w, L, rope, *, heads, head_dim, head_group, eps, backend, out_dtype=BF16,
+                   permutation=None):
+    """``backend``: a dense backend name, or a callable ``(q, k, v) -> o`` (e.g. Spark bound to this layer, which
+    needs ``head_group == heads``).
+
+    ``permutation`` = (perm, inverse): rows are gathered once on the int8 input, so Q/K/V come out of the GEMM
+    already in the backend's order (no copies of the projections), and the attention output is scattered back once.
+    """
+    if permutation is not None:
+        perm, inverse = permutation
+        xq, xs = xq.index_select(0, perm), xs.index_select(0, perm)
+        if rope is not None:
+            rope = tuple(t.index_select(0, perm) for t in rope)
     inner = heads * head_dim
     qkv = w['qkv']
+    attend = backend if callable(backend) else (lambda q, k, v: attention(q, k, v, backend))
     o = torch.empty(L, inner, device=xq.device, dtype=out_dtype)
     for h0 in range(0, heads, head_group):
         h1 = min(h0 + head_group, heads)
@@ -85,14 +98,16 @@ def self_attention(xq, xs, w, L, rope, *, heads, head_dim, head_group, eps, back
         if rope is not None:
             apply_rope_(q, *rope)
             apply_rope_(k, *rope)
-        o[:, a:b] = attention(q, k, v, backend).reshape(L, -1)
+        o[:, a:b] = attend(q, k, v).reshape(L, -1)
         del q, k, v
+    if permutation is not None:
+        o = o.index_select(0, inverse)
     oq, os_ = K.rotate_quantize(o)
     del o
     return K.qlinear(oq, os_, w['out'])
 
 
-def dit_block(x, w, rows, mods, rope, *, head_group=8, ffn_chunk=4096, backend='sdpa', cfg=DIT):
+def dit_block(x, w, rows, mods, rope, *, head_group=8, ffn_chunk=4096, backend='sdpa', cfg=DIT, permutation=None):
     """One modulated H3 block on the packed sequence ``x`` (L, D) in place."""
     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods
     L = x.shape[0]
@@ -100,7 +115,7 @@ def dit_block(x, w, rows, mods, rope, *, head_group=8, ffn_chunk=4096, backend='
     xq, xs = K.norm_modulate_rotate_quantize(x, w['norm1'], cfg.norm_eps, scale_msa, shift_msa, rows)
     y = self_attention(xq, xs, {**lin, 'norm_q': w['norm_q'], 'norm_k': w['norm_k']}, L, rope,
                        heads=cfg.num_heads, head_dim=cfg.head_dim, head_group=head_group, eps=cfg.qk_norm_eps,
-                       backend=backend)
+                       backend=backend, permutation=permutation)
     del xq, xs
     gated_add_(x, gate_msa, rows, y)
     del y
@@ -165,7 +180,7 @@ class Request:
 
 class DiT:
     def __init__(self, store, *, device='cuda', tiers=None, slots=2, head_group=8, ffn_chunk=4096,
-                 attention_backend='sdpa', passes=None, progress=None):
+                 attention_backend='sdpa', passes=None, progress=None, spark=None):
         from .streamer import UnitStreamer
         self.store = store
         self.device = torch.device(device)
@@ -179,6 +194,7 @@ class DiT:
         self.head_group = head_group
         self.ffn_chunk = ffn_chunk
         self.backend = attention_backend
+        self.spark = spark  # SparkAttention: sparse layers need every head at once
         self.timings: list[float] = []
 
     def block_weights(self, tensors: dict, unit: dict) -> dict:
@@ -208,13 +224,20 @@ class DiT:
         rows = t_index * cfg.modality_num + req.tags
         self.streamer.prime()
         units = self.store.units('dit')
+        if self.spark is not None:
+            self.spark.begin_step(req, t_index)
         for i in range(self.num_layers):
             t0 = time.perf_counter()
             tensors = self.streamer.acquire(i)
             w = self.block_weights(tensors, units[i])
             mods = adaln_tables(w, temb, cfg.hidden_size)
-            dit_block(x, w, rows, mods, req.rope, head_group=self.head_group, ffn_chunk=self.ffn_chunk,
-                      backend=self.backend, cfg=cfg)
+            backend, group, permutation = self.backend, self.head_group, None
+            if self.spark is not None and not self.spark.is_dense(i, req.seq):
+                backend = (lambda q, k, v, layer=i: self.spark(q, k, v, layer, permuted=True))
+                group = cfg.num_heads
+                permutation = self.spark.permutation()
+            dit_block(x, w, rows, mods, req.rope, head_group=group, ffn_chunk=self.ffn_chunk,
+                      backend=backend, cfg=cfg, permutation=permutation)
             self.streamer.release(i, tensors)
             del w, mods, tensors
             if on_block:

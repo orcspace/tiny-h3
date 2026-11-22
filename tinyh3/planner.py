@@ -137,7 +137,7 @@ def bit_reversal_order(n: int) -> list[int]:
     return sorted(range(n), key=lambda i: int(format(i, f'0{bits}b')[::-1], 2))
 
 
-def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'mixed', steps: int = 4,
+def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'int8', steps: int = 4,
               sizes: list[int] | None = None, kinds: list[str] | None = None, attention: str = 'auto',
               text_cached: bool = False, te_bytes: int | None = None, force_head_group: int | None = None,
               force_ffn_chunk: int | None = None, max_resident: int | None = None) -> Plan:
@@ -149,12 +149,27 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'mixed', steps:
     plan = Plan(fits=False, policy=policy, seq=seq, block_kinds=kinds)
 
     if hw.vram_total == 0:
-        plan.reason = 'CUDA-видеокарта не найдена'
+        # CPU development mode: everything "resident" in host memory, dense attention. Only for tiny models/tests.
+        plan.fits, plan.attention, plan.resident = True, 'sdpa', list(range(n))
+        plan.head_group, plan.ffn_chunk = DIT.num_heads, 4096
+        plan.notes.append('CUDA не найдена: режим CPU (только для отладки)')
+        plan.est = {'step_s': 0.0, 'total_s': 0.0}
         return plan
 
     reserve = int(0.35 * GiB) + (int(0.25 * GiB) if windows else 0)
     plan.vram_budget = vram_budget = max(hw.vram_free - reserve, 0)
     globals_bytes = 64 * MiB
+
+    # 0. Attention backend. Spark needs every head of a layer at once (plus permuted copies), so it is only chosen
+    #    when that working set leaves room for weights; otherwise a dense backend runs per head group.
+    plan.attention = choose_attention(hw, attention, seq)
+    if plan.attention == 'spark' and not force_head_group:
+        spark_act = activation_bytes(seq, DIT.num_heads, 2048) + seq * (DIT.hidden_size + 4)
+        if spark_act + globals_bytes + 4 * min(sizes) > 0.7 * vram_budget:
+            plan.notes.append('Spark-Attn не помещается по памяти при такой длине — плотное внимание')
+            plan.attention = choose_attention(hw, 'dense', seq)
+        else:
+            force_head_group, force_ffn_chunk = DIT.num_heads, force_ffn_chunk or 2048
 
     # 1. Partition the step: the largest head group / FFN chunk whose activations leave at least ~45% of the
     #    budget for weights (resident blocks + streaming slots).
@@ -165,7 +180,8 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'mixed', steps:
     for g in groups:
         for c in chunks:
             act = activation_bytes(seq, g, c)
-            if act + globals_bytes + 2 * smallest_slot <= vram_budget and act <= 0.55 * vram_budget:
+            limit = 0.7 if plan.attention == 'spark' else 0.55
+            if act + globals_bytes + 2 * smallest_slot <= vram_budget and act <= limit * vram_budget:
                 choice = (g, c, act)
                 break
         if choice:
@@ -239,7 +255,6 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'mixed', steps:
         if ram_budget - used < 2 * plan.slot_bytes:
             plan.notes.append('мало ОЗУ под буферы чтения с диска — возможны паузы')
 
-    plan.attention = attention if attention != 'auto' else ('sage' if hw.compute_capability >= (8, 0) else 'sdpa')
     plan.est = estimate(hw, geometry, plan, sizes, steps, text_cached, te_bytes)
     plan.fits = True
     if plan.disk:
@@ -248,11 +263,37 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'mixed', steps:
     return plan
 
 
+SPARK_SPEEDUP = 2.6   # attention-time reduction of Spark 'speed' mode on H3 (pi-H3 / Spark-H3 measurements: 2.2-3.1x)
+SAGE_SPEEDUP = 1.8
+
+
+def choose_attention(hw: Hardware, wanted: str, seq: int) -> str:
+    if wanted not in ('auto', 'dense'):
+        return wanted
+    if wanted == 'auto' and hw.spark and seq >= 8192:
+        return 'spark'
+    if hw.sage:
+        return 'sage' if hw.unlocked else 'sage16'
+    return 'sdpa'
+
+
+def attention_rate(hw: Hardware, backend: str) -> float:
+    """Effective dense-equivalent attention FLOP/s."""
+    bf16 = max(hw.fp16_tflops, 1.0) * 1e12 * 0.65
+    if backend == 'spark':
+        return bf16 * SPARK_SPEEDUP
+    if backend == 'sage16':
+        return max(hw.fp16acc_tflops * 1e12 * 0.65, bf16) * SAGE_SPEEDUP
+    if backend == 'sage':
+        return bf16 * SAGE_SPEEDUP
+    return bf16
+
+
 def estimate(hw: Hardware, geometry: Geometry, plan: Plan, sizes: list[int], steps: int, text_cached: bool,
              te_bytes: int | None) -> dict:
     seq = geometry.sequence_length
     int8_eff = max(hw.int8_tops, 1.0) * 1e12 * 0.55
-    attn_rate = max(hw.fp16_tflops, 1.0) * 1e12 * 0.65 * (1.8 if plan.attention == 'sage' else 1.0)
+    attn_rate = attention_rate(hw, plan.attention)
     lin = 2.0 * seq * DIT.block_params() / int8_eff
     attn = 4.0 * seq * seq * DIT.inner_dim / attn_rate
     misc = seq * DIT.hidden_size * 2 * 24 / 300e9
@@ -273,9 +314,10 @@ def estimate(hw: Hardware, geometry: Geometry, plan: Plan, sizes: list[int], ste
             'stall_s': round(max(0.0, max(pcie, disk) - compute) * steps, 2)}
 
 
-def quick_plan(vram_gib: float, ram_gib: float, height: int, width: int, seconds: float, policy='mixed',
-               steps=4, gpu='RTX 3070', disk_gbps=2.0) -> Plan:
+def quick_plan(vram_gib: float, ram_gib: float, height: int, width: int, seconds: float, policy='int8',
+               steps=4, gpu='RTX 3070', disk_gbps=2.0, unlocked=False, spark=True, attention='auto') -> Plan:
     from .hardware import simulated
     from .config import frames_for_seconds
-    hw = simulated(vram_gib, ram_gib, gpu, disk_gbps)
-    return make_plan(hw, Geometry(height, width, frames_for_seconds(seconds)), policy=policy, steps=steps)
+    hw = simulated(vram_gib, ram_gib, gpu, disk_gbps, unlocked=unlocked, spark=spark)
+    return make_plan(hw, Geometry(height, width, frames_for_seconds(seconds)), policy=policy, steps=steps,
+                     attention=attention)

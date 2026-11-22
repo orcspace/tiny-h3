@@ -35,6 +35,10 @@ class Hardware:
     fp16_tflops: float = 0.0
     pcie_gbps: float = 12.0
     disk_gbps: float = 1.5
+    fp16acc_tflops: float = 0.0   # FP16 with FP16 accumulation: not capped on GeForce
+    unlocked: bool | None = None  # gpu-unlock state measured by gpu_tuning (None: unknown / not GeForce)
+    spark: bool = False           # Spark-Attn kernels importable for this GPU
+    sage: bool = False            # SageAttention importable
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -104,6 +108,21 @@ def probe(measure_disk_at: Path | None = None) -> Hardware:
     except Exception:  # pragma: no cover - no torch / broken driver
         pass
     hw.int8_tops, hw.fp16_tflops = throughput_for(hw.gpu_name, hw.compute_capability)
+    hw.fp16acc_tflops = 2 * hw.fp16_tflops if 'GeForce' in hw.gpu_name else hw.fp16_tflops
+    try:
+        from .gpu_tuning import load
+        prof = load()
+        if prof is not None and prof.gpu == hw.gpu_name:
+            hw.int8_tops, hw.fp16_tflops = prof.int8_tops, prof.bf16_tflops
+            hw.fp16acc_tflops, hw.unlocked = prof.fp16acc_tflops, prof.unlocked
+    except Exception:
+        pass
+    try:
+        from .runtime.attention import spark_available, _sage
+        hw.spark = spark_available()
+        hw.sage = _sage() is not None
+    except Exception:
+        pass
     cached = disk_speed_cache()
     if measure_disk_at is not None:
         hw.disk_gbps = measure_disk(measure_disk_at) or hw.disk_gbps
@@ -154,11 +173,13 @@ def measure_disk(path: Path, nbytes: int = 512 << 20) -> float | None:
     return gbps
 
 
-def simulated(vram_gib: float, ram_gib: float, gpu: str = 'RTX 3070', disk_gbps: float = 2.0) -> Hardware:
+def simulated(vram_gib: float, ram_gib: float, gpu: str = 'RTX 3070', disk_gbps: float = 2.0,
+              unlocked: bool = False, spark: bool = True, sage: bool = True) -> Hardware:
     """A hypothetical machine for ``tinyh3 plan --vram-gib --ram-gib``."""
     cc = (8, 6) if '30' in gpu else (8, 9)
     tops, tflops = throughput_for(gpu, cc)
     return Hardware(gpu_name=f'NVIDIA GeForce {gpu} (simulated)', compute_capability=cc,
                     vram_total=int(vram_gib * GiB), vram_free=int((vram_gib - 0.45) * GiB),
                     ram_total=int(ram_gib * GiB), ram_available=int((ram_gib - 3.5) * GiB),
-                    int8_tops=tops, fp16_tflops=tflops, disk_gbps=disk_gbps)
+                    int8_tops=tops, fp16_tflops=tflops * (2 if unlocked else 1), disk_gbps=disk_gbps,
+                    fp16acc_tflops=2 * tflops, unlocked=unlocked, spark=spark, sage=sage)
