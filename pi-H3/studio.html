@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pi-H3 Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #ffffff; --panel: #ffffff; --panel2: #fafafa; --raised: #f5f5f5;
+    --border: #e4e4e4; --hairline: #ececec;
+    --text: #111111; --muted: #666666; --dim: #929292;
+    --accent: #111111; --accent2: #315efb; --accent-soft: rgba(49,94,251,0.08);
+    --lavender: #111111; --link: #315efb;
+    --spark: #f05f67;
+    --stage-base: #fafafa; --stage-square: #efefef; --thumb-bg: #f5f5f5;
+    --button-text: #ffffff;
+    --radius: 12px;
+  }
+  body.dark {
+    --bg: #111111; --panel: #171717; --panel2: #1d1d1d; --raised: #262626;
+    --border: #383838; --hairline: #2c2c2c;
+    --text: #f7f7f7; --muted: #b0b0b0; --dim: #7d7d7d;
+    --accent: #f4f4f4; --accent2: #82a2ff; --accent-soft: rgba(130,162,255,0.12);
+    --lavender: #f4f4f4; --link: #9db5ff;
+    --spark: #f05f67;
+    --stage-base: #131313; --stage-square: #1c1c1c; --thumb-bg: #202020;
+    --button-text: #111111;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh;
+    display: flex; flex-direction: column; overflow: hidden;
+    font-size: 13px; -webkit-font-smoothing: antialiased;
+  }
+  .topbar {
+    display: flex; align-items: center; gap: 14px; padding: 12px 24px;
+    background: var(--panel); border-bottom: 1px solid var(--hairline); flex-shrink: 0;
+  }
+  .brand { font-weight: 700; font-size: 1.35rem; white-space: nowrap; letter-spacing: -0.055em; display: flex; align-items: center; }
+  .brand .pi { color: #4585ed; }
+  .brand .dash { color: var(--dim); }
+  .brand .h3 { color: var(--spark); }
+  .studio-badge {
+    font-size: 0.58rem; font-weight: 650; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 9px; margin-left: 12px; background: transparent;
+  }
+  .mode-tabs { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
+  .mode-tabs button {
+    border: none; border-radius: 7px; padding: 6px 16px; font-weight: 550; font-size: 0.82rem;
+    background: transparent; color: var(--muted); cursor: pointer; transition: color 0.15s, background 0.15s;
+    font-family: inherit;
+  }
+  .mode-tabs button:hover { color: var(--text); }
+  .mode-tabs button.active { background: var(--accent); color: var(--button-text); box-shadow: none; }
+  .spacer { flex: 1; }
+  .ml-badge { color: var(--muted); text-decoration: none; font-size: 0.8rem; font-weight: 500; transition: color 0.15s; white-space: nowrap; }
+  .ml-badge:hover { color: var(--text); }
+  .ml-badge-img { display: inline-flex; align-items: center; }
+  .ml-badge-img img { height: 20px; display: block; }
+  .ml-badge-img:hover { opacity: 0.85; }
+  .theme-toggle {
+    width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 9px;
+    background: transparent; color: var(--muted); cursor: pointer; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: color 0.15s, background 0.15s;
+  }
+  .theme-toggle:hover { color: var(--text); background: var(--panel2); }
+  .theme-toggle svg { width: 17px; height: 17px; }
+  .theme-toggle .theme-icon-moon { display: none; }
+  .theme-toggle[data-mode="light"] .theme-icon-sun { display: none; }
+  .theme-toggle[data-mode="light"] .theme-icon-moon { display: block; }
+  .main { display: flex; flex: 1; min-height: 0; }
+  .rail {
+    width: 52px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center;
+    gap: 6px; padding: 10px 0; background: var(--panel); border-right: 1px solid var(--hairline);
+  }
+  .rail button {
+    width: 38px; height: 38px; border: 1px solid transparent; border-radius: 8px;
+    background: transparent; color: var(--muted); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: color 0.15s, background 0.15s;
+  }
+  .rail button:hover { background: var(--panel2); color: var(--text); }
+  .viewport { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: auto; position: relative; }
+  .doc-grid { flex: 1; min-height: 0; display: flex; gap: 16px; width: 100%; align-items: stretch; justify-content: center; padding: 20px 20px 10px; }
+  .doc {
+    flex: 1; min-width: 0; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  }
+  .doc figcaption {
+    padding: 8px 12px; font-size: 0.62rem; font-weight: 650; letter-spacing: 0.12em;
+    color: var(--dim); border-bottom: 1px solid var(--hairline); text-transform: uppercase;
+    display: flex; align-items: center;
+  }
+  .doc .stage {
+    position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+    overflow: hidden; background-color: var(--stage-base);
+    background-image:
+      linear-gradient(45deg, var(--stage-square) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--stage-square) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--stage-square) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--stage-square) 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  }
+  .doc img, .doc video { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+  .doc video.previewing { width: 100%; height: 100%; object-fit: contain; }
+  .drop-hint { color: var(--dim); font-size: 0.85rem; text-align: center; padding: 20px; }
+  .drop-hint b { color: var(--muted); display: block; margin-bottom: 6px; }
+  .doc.dragover { outline: 2px dashed var(--accent2); outline-offset: -2px; }
+  .doc-bar {
+    display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+    border-top: 1px solid var(--hairline); background: var(--panel);
+    font-size: 0.72rem; color: var(--muted); flex-shrink: 0;
+  }
+  .doc-bar .spark-tag { color: var(--spark); font-weight: 600; }
+  .history-strip {
+    display: flex; gap: 8px; padding: 8px 12px; overflow-x: auto; flex-shrink: 0;
+    background: var(--panel); border-top: 1px solid var(--hairline); align-items: center;
+  }
+  .history-strip .hlabel { font-size: 0.62rem; font-weight: 650; letter-spacing: 0.14em; color: var(--dim); text-transform: uppercase; white-space: nowrap; }
+  .history-chip {
+    width: 52px; height: 52px; border-radius: 6px; border: 1px solid var(--border);
+    overflow: hidden; cursor: pointer; flex-shrink: 0; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--raised); color: var(--dim); font-size: 0.55rem; letter-spacing: 0.08em;
+  }
+  .history-chip:hover { border-color: var(--accent); }
+  .history-chip img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .history-chip .hseed {
+    position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.65);
+    color: #ddd; font-size: 0.52rem; padding: 1px 3px; text-align: center; z-index: 2;
+  }
+  body.dark .history-chip .hseed { background: rgba(0,0,0,0.72); color: #eeeeee; }
+  .panels {
+    width: 400px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;
+    padding: 12px; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--hairline);
+  }
+  .panel { background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
+  .panel-title { font-size: 0.62rem; font-weight: 650; letter-spacing: 0.12em; color: var(--dim); text-transform: uppercase; margin-bottom: 10px; cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+  .panel .panel-title::after { content: "▾"; font-size: 0.7rem; color: var(--dim); }
+  .panel.collapsed .panel-title::after { content: "▸"; }
+  .panel.collapsed .panel-body { display: none; }
+  .panel label { display: block; font-size: 0.72rem; font-weight: 550; color: var(--muted); margin: 10px 0 4px; }
+  .panel label:first-of-type { margin-top: 0; }
+  textarea, input[type="text"], input[type="number"], input[type="range"], select {
+    width: 100%; background: var(--raised); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 10px; font-family: inherit; font-size: 0.83rem; resize: vertical;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  input[type="range"] { padding: 0; background: transparent; border: none; accent-color: var(--accent2); }
+  select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+  textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent2); box-shadow: 0 0 0 3px var(--accent-soft); }
+  textarea.code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.72rem; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  .range-row { display: flex; align-items: center; gap: 10px; }
+  .range-row input { flex: 1; }
+  .range-out { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.72rem; color: var(--lavender); min-width: 44px; text-align: right; }
+  .panel label.switch, .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; margin: 0; }
+  .switch input { display: none; }
+  .switch .sw {
+    display: inline-block;
+    width: 34px; height: 20px; border-radius: 999px; background: var(--raised);
+    border: 1px solid var(--border); position: relative; flex-shrink: 0; transition: background 0.18s, border-color 0.18s;
+  }
+  .switch .sw::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--muted); transition: transform 0.18s, background 0.18s;
+  }
+  .switch input:checked + .sw { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .sw::after { transform: translateX(14px); background: #fff; }
+  .switch .sw-label { font-size: 0.75rem; color: var(--muted); }
+  .hint { font-size: 0.68rem; color: var(--dim); margin-top: 8px; line-height: 1.4; }
+  .hint a { color: var(--link); text-decoration: none; }
+  #examples { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+  .ex-chip {
+    border: 1px solid var(--border); border-radius: 8px; cursor: pointer; flex-shrink: 0;
+    background: var(--raised); padding: 7px 10px; text-align: left;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    transition: border-color 0.15s; font-family: inherit;
+  }
+  .ex-chip:hover { border-color: var(--accent); }
+  .ex-chip .ex-label { font-size: 0.75rem; color: var(--text); font-weight: 550; }
+  .ex-chip .ex-aspect { font-size: 0.62rem; color: var(--lavender); font-family: "IBM Plex Mono", ui-monospace, monospace; white-space: nowrap; }
+  .frame-slots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .frame-slot {
+    position: relative; aspect-ratio: 16 / 10; overflow: hidden;
+    border: 1px dashed var(--border); border-radius: 8px; background: var(--raised);
+    padding: 8px; cursor: pointer; font-family: inherit; text-align: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    transition: border-color 0.15s;
+  }
+  .frame-slot:hover { border-color: var(--accent); }
+  .frame-slot.filled { border-style: solid; }
+  .frame-slot .fs-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .frame-slot .fs-label { font-size: 0.75rem; font-weight: 550; color: var(--muted); }
+  .frame-slot .fs-sub { font-size: 0.65rem; color: var(--dim); }
+  .frame-slot.filled .fs-label, .frame-slot.filled .fs-sub { display: none; }
+  .frame-slot .fs-clear {
+    position: absolute; top: 5px; right: 5px; z-index: 1; width: 22px; height: 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 0.7rem; cursor: pointer;
+  }
+  .frame-slot .fs-clear[hidden] { display: none; }
+  #run-btn {
+    margin-top: 4px; padding: 12px; border: 1px solid var(--accent); border-radius: 999px; cursor: pointer;
+    background: var(--accent); color: var(--button-text); box-shadow: none;
+    font-weight: 600; font-size: 0.9rem; letter-spacing: 0.01em; font-family: inherit;
+    transition: filter 0.15s, transform 0.05s;
+  }
+  #run-btn:hover { filter: brightness(1.12); }
+  #run-btn:active { transform: translateY(1px); }
+  #run-btn:disabled { opacity: 0.5; cursor: wait; }
+  .statusbar {
+    display: flex; align-items: center; gap: 16px; padding: 7px 16px; flex-shrink: 0;
+    background: var(--panel); border-top: 1px solid var(--hairline);
+    font-size: 0.75rem; color: var(--muted);
+  }
+  .statusbar .pulse { width: 8px; height: 8px; border-radius: 50%; background: #4fd1a5; }
+  .statusbar.busy .pulse { background: var(--accent2); animation: pulse 1s infinite alternate; }
+  @keyframes pulse { from { opacity: 0.4; } to { opacity: 1; } }
+  .foot-links { display: flex; gap: 12px; align-items: center; }
+  .foot-links a { color: var(--dim); text-decoration: none; font-size: 0.72rem; font-weight: 500; }
+  .foot-links a:hover { color: var(--link); }
+  #file-input { display: none; }
+  @media (max-width: 860px) {
+    html, body { height: auto !important; overflow: visible !important; }
+    body { display: block; }
+    .topbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+    .brand { font-size: 1.1rem; }
+    .topbar .ml-badge, .topbar .ml-badge-img { display: none; }
+    .main { display: block; height: auto; min-height: 0; }
+    .rail {
+      flex-direction: row; width: 100%; justify-content: center; gap: 10px;
+      padding: 6px 10px; border-right: none; border-bottom: 1px solid var(--hairline);
+    }
+    .rail button { width: 44px; height: 44px; }
+    .viewport { display: block; padding: 10px; overflow: visible; }
+    .doc-grid { flex-direction: column; align-items: stretch; height: auto; }
+    .doc { max-width: 100%; width: 100%; }
+    .doc .stage { min-height: 220px; }
+    .panels {
+      width: 100%; border-left: none; border-top: 1px solid var(--hairline);
+      padding: 10px 12px; overflow-y: visible;
+    }
+    .mode-tabs button { padding: 6px 13px; font-size: 0.8rem; }
+    .foot-links { display: none; }
+    .statusbar { position: sticky; bottom: 0; }
+  }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="pi">pi</span><span class="dash">-</span><span class="h3">H3</span><span class="studio-badge">Video Studio</span></div>
+    <div class="mode-tabs">
+      <button onclick="location.href = '/demo/' + location.search">Classic UI</button>
+      <button class="active">Studio</button>
+      <button onclick="location.href = '/workflow/?ui=canvas' + location.search.replace('?', '&')">Workflow</button>
+    </div>
+    <div class="spacer"></div>
+    <a class="ml-badge-img" href="https://hf.co/chat?mode=ml-intern" target="_blank" rel="noopener">
+      <img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/built-with-ml-intern-md.svg" alt="Built with ML Intern" />
+    </a>
+    <a class="ml-badge" href="https://hanshengchen.com/blog/pi-h3/" target="_blank" rel="noopener">Blog</a>
+    <a class="ml-badge" href="https://huggingface.co/Lakonik/pi-H3" target="_blank" rel="noopener">Model</a>
+    <button type="button" class="theme-toggle" id="theme-toggle" data-mode="light" aria-label="Switch to dark mode" title="Switch to dark mode">
+      <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"></circle>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>
+      </svg>
+      <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"></path>
+      </svg>
+    </button>
+  </header>
+
+  <div class="main">
+    <div class="rail">
+      <button id="tool-upload" title="Upload a first frame"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
+      <button id="tool-clear-doc" title="Clear document"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+    </div>
+
+    <div class="viewport">
+      <div class="doc-grid">
+        <figure class="doc" id="doc-after">
+          <figcaption>Output video</figcaption>
+          <div class="stage" id="after-stage">
+            <video id="result-video" controls playsinline hidden></video>
+            <div class="drop-hint" id="result-hint"><b>Nothing yet</b>Hit Generate — 2 or 4 steps, audio included</div>
+          </div>
+          <div class="doc-bar">
+            <span id="result-meta">—</span>
+            <div class="spacer"></div>
+            <a id="result-download" href="#" download="pi_h3.mp4" target="_blank" rel="noopener" hidden>MPEG-4</a>
+          </div>
+        </figure>
+      </div>
+      <div class="history-strip" id="history-strip"><span class="hlabel">History</span></div>
+    </div>
+
+    <aside class="panels">
+      <section class="panel">
+        <div class="panel-title">Examples</div>
+        <div id="examples"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-title">Prompt</div>
+        <div class="panel-body">
+          <textarea id="prompt" rows="8" placeholder="Describe the video: shots, camera, dialogue between <d> tags, soundscape, music…"></textarea>
+          <div class="hint">H3 prompting guide: <a href="https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md" target="_blank" rel="noopener">VIDEO_PROMPT_WRITING_GUIDE_base_en.md</a></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-title">Keyframes</div>
+        <div class="panel-body">
+          <div class="frame-slots">
+            <button class="frame-slot" id="slot-first"><img class="fs-thumb" id="fs-first-thumb" alt="" hidden /><span class="fs-label">First frame</span><span class="fs-sub">Drop or click</span><span class="fs-clear" id="fs-first-clear" role="button" title="Clear first frame" hidden>✕</span></button>
+            <button class="frame-slot" id="slot-last"><img class="fs-thumb" id="fs-last-thumb" alt="" hidden /><span class="fs-label">Last frame</span><span class="fs-sub">Drop or click</span><span class="fs-clear" id="fs-last-clear" role="button" title="Clear last frame" hidden>✕</span></button>
+          </div>
+          <div class="hint">Both keyframes are optional. They are center-cropped and resized onto the requested canvas. A last frame needs both shots described in the prompt.</div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-title">Settings</div>
+        <div class="panel-body">
+          <div class="row">
+            <div><label for="aspect">Aspect ratio</label><select id="aspect"></select></div>
+            <div><label for="steps">Steps</label><select id="steps"><option value="2">2</option><option value="4">4</option></select></div>
+          </div>
+          <label for="duration">Duration</label>
+          <div class="range-row"><input type="range" id="duration" min="5" max="15" step="0.5" value="5" /><span class="range-out" id="duration-out">5.0 s</span></div>
+          <label for="megapixels">Megapixels</label>
+          <div class="range-row"><input type="range" id="megapixels" min="0.25" max="1" step="0.05" value="1" /><span class="range-out" id="megapixels-out">1.00 MP</span></div>
+          <div class="row" style="margin-top:10px">
+            <label class="switch"><input type="checkbox" id="remove-decoder" checked /><span class="sw"></span><span class="sw-label">Remove decoder (DWD direct pixel prediction)</span></label>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-title">Advanced</div>
+        <div class="panel-body">
+          <div class="row">
+            <div><label for="seed">Seed</label><input type="number" id="seed" value="0" min="0" /></div>
+            <label class="switch" style="align-self:flex-end;height:34px"><input type="checkbox" id="randomize" checked /><span class="sw"></span><span class="sw-label">Randomize</span></label>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-title">Run info</div>
+        <div class="panel-body">
+          <textarea id="run-info" class="code" rows="3" readonly placeholder="Steps, decoder tier, resolution, frame count and timing appear here after a run."></textarea>
+        </div>
+      </section>
+      <button id="run-btn">Generate</button>
+    </aside>
+  </div>
+
+  <footer class="statusbar" id="statusbar">
+    <div class="pulse"></div>
+    <span id="status">Idle</span>
+    <div class="spacer"></div>
+    <span class="foot-links">
+      <a href="https://hanshengchen.com/blog/pi-h3/" target="_blank" rel="noopener">Blog</a>
+      <a href="https://hanshengchen.com/dwd/" target="_blank" rel="noopener">Project page</a>
+      <a href="https://arxiv.org/abs/2611.22287" target="_blank" rel="noopener">arXiv</a>
+      <a href="https://github.com/Lakonik/LakonLab" target="_blank" rel="noopener">Code</a>
+    </span>
+    <span id="seed-out"></span>
+  </footer>
+
+  <input type="file" id="file-input" accept="image/*" />
+
+<script type="module">
+  import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@2.7.1/dist/index.min.js";
+
+  const $ = (id) => document.getElementById(id);
+  const state = { firstPath: null, lastName: null, lastPath: null, app: null,
+                  target: "first" };   // which slot the file input / drop targets fill
+
+  // The three demo examples (demo/examples/minimax_h3/examples.json), prompts included.
+  const EXAMPLES = [
+    {
+      label: "Beach bear selfie (official default)",
+      prompt: "integrated_multimodal_description: [Shot 1] Live-action, handheld smartphone selfie video, a close medium shot with the camera held at arm's length slightly above eye level, a young man in an orange beanie and a green rain jacket fills the left 40 percent of the frame and looks straight into the lens. Behind him, a lakeside campsite glows at golden hour, with a yellow tent at the right edge of the background and a dark treeline above the shore. The camera shakes slightly. The young man with a cheerful, breathy voice (S1) says: <d>[English] Day two of camping, and the vibes are immaculate.</d> While he speaks without noticing, a large brown bear steps out of the treeline in the right background and walks along the shore toward the camera, growing larger in the frame. It stops directly behind him and lowers its huge head onto his shoulder nearest the right edge of the frame, so that its snout reaches into the right half of the frame beside his ear. His smile freezes in place and his eyes slide sideways toward the bear without his head moving.\n\noverall_soundscape: Wind hisses across the lake while gravel crunches under heavy, slow paws. The bear lets out a long, warm huff beside the microphone and his nylon jacket rustles as he goes rigid.\n\nnon_diegetic_music: N/A",
+      aspect: "16:9", duration: 5.0, steps: 2, seed: 0, first: null, last: null,
+    },
+    {
+      label: "Your render outlived you",
+      prompt: "integrated_multimodal_description: [Shot 1] Live-action, epic cinematic, a slow push-in through a dim, dusty server room overgrown with thick cobwebs, a single ancient computer monitor glowing at the center of the frame showing a progress bar stuck at \"99%\", a skeleton in an office chair slumped in front of it with one bony finger still on the mouse, dust drifting through a shaft of cold light. A deep, gravelly movie-trailer narrator (S1) says off-screen: <d>[English] In a world where your render outlived you...</d>\n\noverall_soundscape: A low electrical hum, the slow creak of the office chair, and a single cooling fan rattling and winding down.\n\nnon_diegetic_music: Ominous low brass and taiko drums build slowly.",
+      aspect: "16:9", duration: 5.0, steps: 2, seed: 1034413408, first: null, last: null,
+    },
+    {
+      label: "Distracted boyfriend",
+      prompt: "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\nintegrated_multimodal_description: [Shot 1] Live-action, candid street photography look with shallow depth of field, the three people shown in <Picture 1> walk along a sunlit European city street, preserving their exact positions: the woman in the red sleeveless top at the left foreground walking away from the camera, the young man in the blue plaid short-sleeve shirt at the center with his head turned back over his left shoulder toward the woman in red, and his girlfriend in the light blue sleeveless top at the right, staring at him with her mouth open in disbelief. The blurred stone buildings and warm afternoon light are preserved. The camera holds a static shot. The man's head keeps turning further toward the woman in red, his whole upper body twisting now, and he stumbles slightly on the pavement as he stops watching where he's walking. His girlfriend's expression sharpens, she yanks her hand free from his and smacks him on the upper arm with her open palm. The girlfriend with an offended, sharp, loud voice (S1) says: <d>[Spanish] ¿En serio?</d> He flinches and snaps his head back toward her, raising both hands in front of his chest. The woman in red glances back over her right shoulder with a small smirk and keeps walking out of the left edge of the frame.\n\noverall_soundscape: Footsteps on stone pavement, distant city traffic, the slap of a palm on a cloth sleeve, and a faint murmur of pedestrians in the background.\n\nnon_diegetic_music: N/A",
+      aspect: "16:9", duration: 5.0, steps: 2, seed: 1262275999, first: "distracted_boyfriend.webp", last: null,
+    },
+    {
+      label: "Woman yelling at cat",
+      prompt: "How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the 0.00-second mark of the target video; <Picture 2> (from [Shot 2]) aligns with the 10.00-second mark of the target video.\n\nintegrated_multimodal_description: [Shot 1] Live-action, reality TV look with shallow depth of field, the scene shown in <Picture 1> at an outdoor restaurant patio in warm afternoon sunlight, preserving all positions: the blonde woman in the black sleeveless top at the center-left, mouth wide open and right arm extended pointing toward the camera, pearl bracelets on her wrist, a small white fluffy dog on her lap, and the dark-haired woman in the beige lace top behind her at the right, gripping her arm and looking alarmed. A marble table in the foreground holds a green salad plate, a glass of white wine, water glasses, and white hydrangeas. Diners sit in soft focus behind a black iron railing in the background. The camera holds a static shot. The blonde woman leans further forward, her pointing finger jabbing the air, and she slams her other hand flat on the table, rattling the glasses and sloshing wine. The blonde woman with a loud, high, furious voice (S1) shouts: <d>[English] I had a meeting on Zoom and you walked across the keyboard!</d> [Shot 2] At 00:05.000, the camera cuts to a dim indoor restaurant booth, where the white cat shown in <Picture 2> sits behind a dark table in a dark leather booth seat, its head just above table height. A man walks into the frame from the right edge and pets the cat's head as the cat meows quietly, and then the man puts his hand on the chair above the cat. Canned sitcom laughter. The camera holds a static shot. The cat blinks once, slowly, and the laughter dies down. Its left ear flattens back. It looks down at the salad, then back up at the camera with the same flat expression. The scene settles into the exact composition, lighting, and framing of <Picture 2>.\n\noverall_soundscape: Outdoor patio ambience with clinking glasses, distant conversation, and birds in the background during the first shot. A hand slaps the marble table with a sharp smack and wine sloshes in the glass. The small dog barks in sharp, rapid bursts. After the cut, the sound drops to a quiet indoor room with faint restaurant murmur. Two bursts of canned sitcom studio audience laughter play, the first loud and long on the cut, the second shorter after the cat looks back up.\n\nnon_diegetic_music: N/A",
+      aspect: "16:9", duration: 10.0, steps: 2, seed: 14851915, first: "woman_cat_meme_first.webp", last: "woman_cat_meme_last.webp",
+    },
+  ];
+
+  async function getApp() {
+    if (!state.app) state.app = await client(location.origin);
+    return state.app;
+  }
+
+  async function uploadFile(file) {
+    const form = new FormData();
+    form.append("files", file);
+    const resp = await fetch("/gradio_api/upload", { method: "POST", body: form });
+    if (!resp.ok) throw new Error(`Upload failed (${resp.status})`);
+    const paths = await resp.json();
+    return Array.isArray(paths) ? paths[0] : paths;
+  }
+
+  async function uploadExampleUrl(url, name) {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Could not load ${name} (${resp.status})`);
+    const blob = await resp.blob();
+    return uploadFile(new File([blob], name, { type: blob.type || "image/webp" }));
+  }
+
+  function setStatus(text, busy = false) {
+    $("status").textContent = text;
+    $("statusbar").classList.toggle("busy", busy);
+    $("run-btn").disabled = busy;
+  }
+
+  // ---------- theme ----------
+  const themeBtn = $("theme-toggle");
+  function applyTheme(mode) {
+    document.body.classList.toggle("dark", mode === "dark");
+    themeBtn.dataset.mode = mode;
+    const label = mode === "dark" ? "Switch to light mode" : "Switch to dark mode";
+    themeBtn.setAttribute("aria-label", label);
+    themeBtn.setAttribute("title", label);
+    try { localStorage.setItem("pi-h3-theme", mode); } catch (e) {}
+  }
+  themeBtn.onclick = () => applyTheme(document.body.classList.contains("dark") ? "light" : "dark");
+  (function initTheme() {
+    let mode = "light";
+    try { if (localStorage.getItem("pi-h3-theme") === "dark") mode = "dark"; } catch (e) {}
+    applyTheme(mode);
+  })();
+
+  // ---------- keyframes ----------
+  const fileInput = $("file-input");
+  // one keyframe slot ("first" or "last"): its uploaded path, thumbnail and clear button
+  function setSlot(slot, path, src, name) {
+    state[slot + "Path"] = path;
+    const thumb = $(`fs-${slot}-thumb`);
+    thumb.hidden = !src;
+    if (src) thumb.src = src; else thumb.removeAttribute("src");
+    $(`fs-${slot}-clear`).hidden = !src;
+    $(`slot-${slot}`).classList.toggle("filled", !!src);
+    $(`slot-${slot}`).title = name || "";
+  }
+  async function takeFile(file) {
+    setStatus("Uploading…", true);
+    try {
+      setSlot(state.target, await uploadFile(file), URL.createObjectURL(file), file.name);
+      setStatus("Idle");
+    } catch (err) {
+      setStatus(String(err));
+    }
+  }
+  $("tool-upload").onclick = () => { state.target = "first"; fileInput.click(); };
+  for (const slot of ["first", "last"]) {
+    $(`slot-${slot}`).onclick = () => { state.target = slot; fileInput.click(); };
+    $(`fs-${slot}-clear`).onclick = (e) => { e.stopPropagation(); setSlot(slot, null, null); };
+    $(`slot-${slot}`).addEventListener("dragover", (e) => e.preventDefault());
+    $(`slot-${slot}`).addEventListener("drop", (e) => acceptDrop(e, slot));
+  }
+  fileInput.onchange = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (file) await takeFile(file);
+  };
+  const acceptDrop = async (e, target) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    state.target = target;
+    await takeFile(file);
+  };
+
+  // ---------- history ----------
+  // Each run is its own entry: restoring a chip restores its prompt, keyframes note,
+  // settings and (still valid) video URL, without touching the current document keys.
+  const history = [];
+  function renderHistory() {
+    const strip = $("history-strip");
+    strip.innerHTML = '<span class="hlabel">History</span>';
+    history.forEach((h) => {
+      const chip = document.createElement("div");
+      chip.className = "history-chip";
+      chip.title = h.info || "";
+      if (h.poster) {
+        const img = document.createElement("img");
+        img.src = h.poster;
+        chip.appendChild(img);
+      } else {
+        chip.textContent = "MP4";
+      }
+      const tag = document.createElement("div");
+      tag.className = "hseed";
+      tag.textContent = h.seed ?? "";
+      chip.appendChild(tag);
+      chip.onclick = () => restoreRun(h);
+      strip.appendChild(chip);
+    });
+  }
+  function pushHistory(entry) {
+    history.unshift(entry);
+    if (history.length > 8) history.pop();
+    renderHistory();
+  }
+  function restoreRun(h) {
+    $("prompt").value = h.prompt || "";
+    $("aspect").value = h.aspect || "16:9";
+    $("steps").value = h.steps || "2";
+    $("duration").value = h.duration ?? 5;
+    $("duration-out").textContent = ($("duration").value) + " s";
+    $("megapixels").value = h.megapixels ?? 1;
+    $("megapixels-out").textContent = Number($("megapixels").value).toFixed(2) + " MP";
+    $("remove-decoder").checked = !!h.remove_decoder;
+    if (h.seed_v != null) { $("seed").value = h.seed_v; $("randomize").checked = false; }
+    if (h.video_url) showResult(h.video_url, h);
+    $("run-info").value = h.info || "";
+  }
+
+  // ---------- settings sliders ----------
+  const aspectSel = $("aspect");
+  for (const r of ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]) {
+    const opt = document.createElement("option");
+    opt.value = r; opt.textContent = r;
+    aspectSel.appendChild(opt);
+  }
+  aspectSel.value = "16:9";
+  $("duration").addEventListener("input", () => { $("duration-out").textContent = Number($("duration").value).toFixed(1) + " s"; });
+  $("megapixels").addEventListener("input", () => { $("megapixels-out").textContent = Number($("megapixels").value).toFixed(2) + " MP"; });
+  $("steps").value = "2";
+  $("remove-decoder").checked = true;
+  $("prompt").value = document.querySelector("#prompt").dataset.default || "";
+
+  // ---------- examples ----------
+  function renderExamples() {
+    const exRow = $("examples");
+    exRow.innerHTML = "";
+    EXAMPLES.forEach((ex) => {
+      const chip = document.createElement("button");
+      chip.className = "ex-chip";
+      const label = document.createElement("span");
+      label.className = "ex-label";
+      label.textContent = ex.label;
+      const tag = document.createElement("span");
+      tag.className = "ex-aspect";
+      tag.textContent = `${ex.aspect} · ${ex.duration} s`;
+      chip.appendChild(label);
+      chip.appendChild(tag);
+      chip.onclick = async () => {
+        setStatus("Loading example…", true);
+        try {
+          $("prompt").value = ex.prompt;
+          aspectSel.value = ex.aspect;
+          $("steps").value = String(ex.steps);
+          $("duration").value = ex.duration;
+          $("duration-out").textContent = ex.duration.toFixed(1) + " s";
+          $("seed").value = ex.seed;
+          $("randomize").checked = false;
+          // an example sets both slots, so a frame from an earlier example never lingers
+          for (const slot of ["first", "last"]) {
+            const name = ex[slot];
+            setSlot(slot, name ? await uploadExampleUrl(`/examples/${name}`, name) : null,
+                    name ? `/examples/${name}` : null, name);
+          }
+          setStatus("Example loaded — hit Generate");
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      exRow.appendChild(chip);
+    });
+  }
+
+  // ---------- run ----------
+  function unwrap(result) {
+    const data = Array.isArray(result?.data) ? result.data[0] : result?.data;
+    return data ?? {};
+  }
+
+  function showResult(uri, payload) {
+    const video = $("result-video");
+    video.src = uri;
+    video.hidden = false;
+    video.classList.add("previewing");
+    // play with sound (the visitor clicked Generate); fall back to muted if the browser blocks it
+    video.muted = false;
+    video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
+    $("result-hint").style.display = "none";
+    const dl = $("result-download");
+    dl.href = uri; dl.hidden = false;
+    if (payload?.seed != null) $("seed-out").textContent = "seed " + payload.seed;
+    if (payload?.info) {
+      $("result-meta").textContent = payload.info;
+      $("run-info").value = payload.info;
+    }
+  }
+
+  $("run-btn").onclick = async () => {
+    const app = await getApp();
+    const prompt = $("prompt").value.trim();
+    const seed = parseInt($("seed").value, 10) || 0;
+    const randomize = $("randomize").checked;
+    if (!prompt && !state.firstPath) { setStatus("Write a prompt or add a first frame."); return; }
+    setStatus("Generating with pi-H3… (a short clip takes tens of seconds)", true);
+    $("result-video").hidden = true;
+    $("result-download").hidden = true;
+    $("result-video").removeAttribute("src");
+    try {
+      const payload = unwrap(await app.predict("/generate", {
+        prompt: prompt || "",
+        seed, randomize,
+        in_image: state.firstPath || "",
+        in_last_image: state.lastPath || "",
+        aspect_ratio: aspectSel.value,
+        megapixels: parseFloat($("megapixels").value) || 1.0,
+        duration: parseFloat($("duration").value) || 5.0,
+        steps: parseFloat($("steps").value) || 2,
+        remove_decoder: $("remove-decoder").checked,
+      }));
+      const uri = typeof payload.video_url === "string" ? payload.video_url : null;
+      if (!uri) { setStatus("Run finished but no video came back (see console)."); return; }
+      const preset = state.firstPath ? "" : null;
+      showResult(uri, payload);
+      pushHistory({
+        prompt, aspect: aspectSel.value, steps: $("steps").value, duration: parseFloat($("duration").value),
+        megapixels: parseFloat($("megapixels").value), remove_decoder: $("remove-decoder").checked,
+        seed: payload.seed, seed_v: payload.seed, info: payload.info, video_url: uri,
+        poster: state.firstPath ? $("fs-first-thumb").src : null,
+        preset,
+      });
+      setStatus("Done");
+    } catch (err) {
+      setStatus(err?.message || String(err));
+    }
+  };
+
+  // ---------- collapsible panels ----------
+  document.querySelectorAll(".panel .panel-title").forEach((title) => {
+    const body = document.createElement("div");
+    body.className = "panel-body";
+    [...title.parentElement.children].forEach((child) => {
+      if (child !== title) body.appendChild(child);
+    });
+    title.parentElement.appendChild(body);
+    title.onclick = () => title.parentElement.classList.toggle("collapsed");
+  });
+
+  // ---------- clear ----------
+  $("tool-clear-doc").onclick = () => {
+    setSlot("first", null, null); setSlot("last", null, null);
+    const video = $("result-video");
+    video.hidden = true; video.removeAttribute("src");
+    $("result-hint").style.display = "";
+    $("result-download").hidden = true;
+    $("result-meta").textContent = "—";
+    $("seed-out").textContent = "";
+    $("run-info").value = "";
+  };
+
+  setStatus("Idle");
+  renderExamples();
+</script>
+</body>
+</html>

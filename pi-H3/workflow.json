@@ -1,0 +1,161 @@
+{
+  "schema_version": "2",
+  "name": "pi-H3 Workflow",
+  "references": [
+    {
+      "id": "ref_prompt",
+      "label": "Prompt",
+      "role": "reference",
+      "asset_type": "text",
+      "inputs": [{"id": "in", "label": "Text", "type": "text"}],
+      "outputs": [{"id": "out", "label": "Text", "type": "text"}],
+      "x": 40,
+      "y": 60,
+      "width": 300,
+      "height": 200,
+      "data": {"out": "integrated_multimodal_description: [Shot 1] Live-action, handheld selfie video, a young man in an orange beanie at a lakeside campsite at golden hour says: <d>[English] Day two of camping.</d> Behind him, a large brown bear steps out of the treeline and walks toward the camera."}
+    },
+    {
+      "id": "ref_seed",
+      "label": "Seed",
+      "role": "reference",
+      "asset_type": "text",
+      "inputs": [{"id": "in", "label": "Text", "type": "text"}],
+      "outputs": [{"id": "out", "label": "Text", "type": "text"}],
+      "x": 40,
+      "y": 290,
+      "width": 140,
+      "height": 90,
+      "data": {"out": "42"}
+    },
+    {
+      "id": "ref_aspect",
+      "label": "Aspect Ratio",
+      "role": "reference",
+      "asset_type": "text",
+      "inputs": [{"id": "in", "label": "Text", "type": "text"}],
+      "outputs": [{"id": "out", "label": "Text", "type": "text"}],
+      "x": 40,
+      "y": 410,
+      "width": 160,
+      "height": 90,
+      "data": {"out": "16:9"}
+    },
+    {
+      "id": "ref_duration",
+      "label": "Duration (s)",
+      "role": "reference",
+      "asset_type": "text",
+      "inputs": [{"id": "in", "label": "Text", "type": "text"}],
+      "outputs": [{"id": "out", "label": "Text", "type": "text"}],
+      "x": 40,
+      "y": 530,
+      "width": 160,
+      "height": 90,
+      "data": {"out": "5.0"}
+    },
+    {
+      "id": "ref_steps",
+      "label": "Steps (2 or 4)",
+      "role": "reference",
+      "asset_type": "text",
+      "inputs": [{"id": "in", "label": "Text", "type": "text"}],
+      "outputs": [{"id": "out", "label": "Text", "type": "text"}],
+      "x": 40,
+      "y": 650,
+      "width": 150,
+      "height": 90,
+      "data": {"out": "2"}
+    },
+    {
+      "id": "ref_decoder",
+      "label": "Remove Decoder (DWD)",
+      "role": "reference",
+      "asset_type": "text",
+      "inputs": [{"id": "in", "label": "Text", "type": "text"}],
+      "outputs": [{"id": "out", "label": "Text", "type": "text"}],
+      "x": 40,
+      "y": 770,
+      "width": 180,
+      "height": 90,
+      "data": {"out": "true"}
+    },
+    {
+      "id": "ref_first",
+      "label": "Optional First Frame",
+      "role": "reference",
+      "asset_type": "image",
+      "inputs": [{"id": "in", "label": "Image", "type": "image"}],
+      "outputs": [{"id": "out", "label": "Image", "type": "image"}],
+      "x": 40,
+      "y": 890,
+      "width": 220,
+      "height": 130,
+      "data": {}
+    },
+    {
+      "id": "ref_last",
+      "label": "Optional Last Frame",
+      "role": "reference",
+      "asset_type": "image",
+      "inputs": [{"id": "in", "label": "Image", "type": "image"}],
+      "outputs": [{"id": "out", "label": "Image", "type": "image"}],
+      "x": 40,
+      "y": 1050,
+      "width": 220,
+      "height": 130,
+      "data": {}
+    }
+  ],
+  "operators": [
+    {
+      "id": "op_pi_h3_generate",
+      "label": "pi-H3 Generate",
+      "role": "operator",
+      "kind": "fn",
+      "fn": "pi_h3_generate",
+      "inputs": [
+        {"id": "prompt", "label": "Prompt", "type": "text", "required": true},
+        {"id": "in_image", "label": "First Frame", "type": "image"},
+        {"id": "in_last_image", "label": "Last Frame", "type": "image"},
+        {"id": "seed", "label": "Seed", "type": "text"},
+        {"id": "aspect_ratio", "label": "Aspect Ratio", "type": "text", "required": true},
+        {"id": "duration", "label": "Duration (s)", "type": "text"},
+        {"id": "steps", "label": "Steps", "type": "text"},
+        {"id": "remove_decoder", "label": "Remove Decoder", "type": "text"}
+      ],
+      "outputs": [{"id": "out_0", "label": "Video", "type": "video", "output_index": 0}],
+      "x": 420,
+      "y": 60,
+      "width": 260,
+      "height": 300,
+      "data": {}
+    }
+  ],
+  "subjects": [
+    {
+      "id": "sub_video",
+      "label": "Video (MP4, 24 fps, with audio)",
+      "role": "subject",
+      "asset_type": "video",
+      "inputs": [{"id": "in", "label": "Video", "type": "video"}],
+      "outputs": [{"id": "out", "label": "Video", "type": "video"}],
+      "x": 760,
+      "y": 120,
+      "width": 280,
+      "height": 180,
+      "data": {}
+    }
+  ],
+  "edges": [
+    {"id": "e_prompt", "from_node_id": "ref_prompt", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "prompt", "type": "text"},
+    {"id": "e_seed", "from_node_id": "ref_seed", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "seed", "type": "text"},
+    {"id": "e_aspect", "from_node_id": "ref_aspect", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "aspect_ratio", "type": "text"},
+    {"id": "e_duration", "from_node_id": "ref_duration", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "duration", "type": "text"},
+    {"id": "e_steps", "from_node_id": "ref_steps", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "steps", "type": "text"},
+    {"id": "e_decoder", "from_node_id": "ref_decoder", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "remove_decoder", "type": "text"},
+    {"id": "e_first", "from_node_id": "ref_first", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "in_image", "type": "image"},
+    {"id": "e_last", "from_node_id": "ref_last", "from_port_id": "out", "to_node_id": "op_pi_h3_generate", "to_port_id": "in_last_image", "type": "image"},
+    {"id": "e_video", "from_node_id": "op_pi_h3_generate", "from_port_id": "out_0", "to_node_id": "sub_video", "to_port_id": "in", "type": "video"}
+  ]
+}

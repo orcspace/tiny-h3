@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.11.0
+nvidia-cutlass-dsl==4.6.0
+cuda-python==13.5.0
+apache-tvm-ffi==0.1.15.post2
+gradio==6.32.0
+torchvision==0.26.0
+diffusers==0.40.0
+transformers==5.16.1
+accelerate
+peft==0.20.0
+safetensors
+sentencepiece
+av
