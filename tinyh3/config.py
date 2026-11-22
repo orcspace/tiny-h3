@@ -130,19 +130,36 @@ DWD_RGB_STD = (0.458, 0.448, 0.45)
 
 @dataclass(frozen=True)
 class SamplerPreset:
+    """A speed mode. ``steps`` transformer evaluations with the pi-H3 adapter trained for ``adapter_steps``."""
     name: str
+    title: str
     steps: int
+    adapter_steps: int
     shift: float
     audio_shift: float
     max_raw_t: float
     final_step_size_scale: float
     adapter: str
+    spark_mode: str = 'speed'       # 'fidelity': the first ~20% of steps dense; 'speed': all sparse
+    topk: float = 0.1               # Spark: fraction of key blocks computed exactly
+    draft_scale: float = 0.0        # >0: first step at this fraction of the resolution (two-pass)
+    final_scale: float = 1.0        # <1: render the last step smaller, upscale frames natively (Rust Lanczos + CAS)
 
 
 SAMPLERS = {
-    'turbo': SamplerPreset('turbo', 2, 12.0, 3.0, 0.93, 0.6, 'pi_h3_2step_dwd_adapter'),
-    'balanced': SamplerPreset('balanced', 4, 12.0, 3.0, 0.96, 0.6, 'pi_h3_4step_dwd_adapter'),
+    'quality': SamplerPreset('quality', 'Качество', 4, 4, 12.0, 3.0, 0.96, 0.6, 'pi_h3_4step_dwd_adapter',
+                             spark_mode='fidelity'),
+    'balance': SamplerPreset('balance', 'Баланс', 2, 2, 12.0, 3.0, 0.93, 0.6, 'pi_h3_2step_dwd_adapter',
+                             spark_mode='fidelity'),
+    'fast': SamplerPreset('fast', 'Fast', 2, 2, 12.0, 3.0, 0.93, 0.6, 'pi_h3_2step_dwd_adapter',
+                          spark_mode='speed', topk=0.1, draft_scale=0.5),
+    'fast-high': SamplerPreset('fast-high', 'Fast-high', 2, 2, 12.0, 3.0, 0.93, 0.6, 'pi_h3_2step_dwd_adapter',
+                               spark_mode='speed', topk=0.08, draft_scale=0.5, final_scale=0.75),
 }
+SAMPLER_ALIASES = {'turbo': 'fast', 'balanced': 'quality'}
+
+# Output upscaling targets (short side, pixels), applied after DWD by the native Lanczos + CAS upscaler.
+UPSCALE = {'none': 0, '1080p': 1080, '2k': 1440}
 
 # Resolution presets as (height, width) for 16:9; other aspect ratios keep the pixel count.
 RESOLUTIONS = {
@@ -167,6 +184,23 @@ SOURCES = {
 DIT = DiTConfig()
 TEXT = TextEncoderConfig()
 SOL = SolConfig()
+
+
+def render_size(height: int, width: int, scale: float, multiple: int = CANVAS_MULTIPLE) -> tuple[int, int]:
+    """A canvas scaled by ``scale`` (aspect kept as closely as multiples of 32 allow)."""
+    if scale >= 1.0:
+        return height, width
+    return (max(multiple, round(height * scale / multiple) * multiple),
+            max(multiple, round(width * scale / multiple) * multiple))
+
+
+def output_size(height: int, width: int, upscale: str) -> tuple[int, int]:
+    """Final frame size after the optional native upscale to a short side of 1080 / 1440 (even dimensions)."""
+    target = UPSCALE.get(upscale, 0)
+    if not target or min(height, width) >= target:
+        return height, width
+    s = target / min(height, width)
+    return int(round(height * s / 2) * 2), int(round(width * s / 2) * 2)
 
 
 def canvas_size(aspect_ratio: str, num_pixels: float, multiple: int = CANVAS_MULTIPLE) -> tuple[int, int]:

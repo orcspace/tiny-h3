@@ -115,3 +115,20 @@ def test_generate_in_subprocesses(tiny_store, tmp_path, monkeypatch):
     assert os.path.getsize(tmp_path / 'sp.mp4') > 1000
     assert any(e.get('stage') == 'denoise' and e.get('step') for e in events)
     assert report['stages']['denoise']['step_seconds']
+
+
+@pytest.mark.parametrize('mode', ['balance', 'fast-high'])
+def test_modes(tiny_store, tmp_path, monkeypatch, mode):
+    monkeypatch.setenv('TINYH3_HOME', str(tmp_path / 'home'))
+    from tinyh3.runtime.pipeline import GenRequest, generate
+    import av
+    report = generate(GenRequest(prompt='w3 w4', seconds=5, height=128, width=192, sampler=mode, seed=1,
+                                 model=str(tiny_store), output=str(tmp_path / f'{mode}.mp4')), subprocess=False)
+    den, dec = report['stages']['denoise'], report['stages']['decode']
+    assert len(den['step_seconds']) == 2
+    if mode == 'fast-high':
+        assert den['render'] == [128, 96] and dec['upscale']['to'] == [192, 128]
+    else:
+        assert den['render'] == [192, 128] and dec['upscale'] is None
+    with av.open(str(tmp_path / f'{mode}.mp4')) as c:
+        assert (c.streams.video[0].width, c.streams.video[0].height) == (192, 128)

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinyh3"
+version = "0.1.0"
+description = "TinyH3 Video: MiniMax H3 text-to-video with audio on 8 GB GPUs (pi-Flow + DWD, streamed INT8 weights)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "torch>=2.6",
+  "numpy",
+  "safetensors>=0.4",
+  "tokenizers>=0.20",
+  "huggingface_hub>=0.25",
+  "diffusers>=0.40",          # audio VAE (AutoencoderKLMiniMaxH3Audio)
+  "av>=12",                   # H.264 + AAC muxing
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",  # includes websockets for live progress
+  "pydantic>=2",
+  "psutil",
+]
+
+[project.optional-dependencies]
+# Fast attention. Spark-Attn (block-sparse, SM80/86/89/90/120) is installed from its release archive, see README.
+sage = ["sageattention>=2"]
+windows = ["triton-windows"]
+test = ["pytest", "httpx", "transformers>=5", "accelerate", "peft"]
+
+[project.scripts]
+tinyh3 = "tinyh3.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tinyh3*"]
+
+[tool.setuptools.package-data]
+tinyh3 = ["ui/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: runs Triton kernels in the CPU interpreter"]
+filterwarnings = ["ignore::FutureWarning", "ignore::DeprecationWarning"]

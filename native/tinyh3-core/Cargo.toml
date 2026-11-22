@@ -1,0 +1,23 @@
+[package]
+name = "tinyh3-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "TinyH3 native core: parallel weight I/O and video upscaling"
+
+[lib]
+name = "tinyh3_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["extension-module", "abi3-py310"], optional = true }
+rayon = "1.10"
+
+[features]
+default = ["python"]
+python = ["dep:pyo3"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

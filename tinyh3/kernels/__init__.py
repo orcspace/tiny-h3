@@ -99,7 +99,10 @@ def qlinear(xq, xs, w, bias=None, out_dtype=torch.bfloat16, out=None):
 
 
 def dense_linear(x, w, bias=None):
-    """Weight-only path (text encoder, small layers): dequantize to the activation dtype and matmul."""
+    """Weight-only path (text encoder, small layers): dequantize to the activation dtype and matmul. Weights kept in
+    the ConvRot basis (``rotated``) get the same rotation on the activations: (x H)(W H)^T = x W^T."""
+    if w.get('rotated'):
+        x = ref.rotate(x).to(x.dtype)
     if w['kind'] in ('bf16', 'fp16', 'fp32'):
         weight = w['w'].to(x.dtype)
     else:

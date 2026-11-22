@@ -39,6 +39,7 @@ class Hardware:
     unlocked: bool | None = None  # gpu-unlock state measured by gpu_tuning (None: unknown / not GeForce)
     spark: bool = False           # Spark-Attn kernels importable for this GPU
     sage: bool = False            # SageAttention importable
+    attention_ms: dict | None = None  # measured by `tinyh3 bench`: backend -> ms at 16384 tokens x 8 heads
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -96,6 +97,10 @@ def host_memory() -> tuple[int, int]:
 
 
 def probe(measure_disk_at: Path | None = None) -> Hardware:
+    sim = os.environ.get('TINYH3_SIMULATE')  # "vram_gib,ram_gib[,gpu]" — UI/plan demos without the hardware
+    if sim:
+        parts = sim.split(',')
+        return simulated(float(parts[0]), float(parts[1]), parts[2] if len(parts) > 2 else 'RTX 3070')
     hw = Hardware()
     hw.ram_total, hw.ram_available = host_memory()
     try:
@@ -115,6 +120,9 @@ def probe(measure_disk_at: Path | None = None) -> Hardware:
         if prof is not None and prof.gpu == hw.gpu_name:
             hw.int8_tops, hw.fp16_tflops = prof.int8_tops, prof.bf16_tflops
             hw.fp16acc_tflops, hw.unlocked = prof.fp16acc_tflops, prof.unlocked
+            import json as _json
+            from .gpu_tuning import _path
+            hw.attention_ms = (_json.loads(_path().read_text()).get('attention_ms') or {}).get('16384')
     except Exception:
         pass
     try:

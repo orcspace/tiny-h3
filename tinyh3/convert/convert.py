@@ -198,7 +198,9 @@ def convert_dwd(adapter, out: Path) -> dict | None:
     return {'file': 'dwd/head.safetensors', 'num_layers': num_layers}
 
 
-def convert_text(reader, out: Path, cfg: TextEncoderConfig, kind: str, device, progress) -> dict:
+def convert_text(reader, out: Path, cfg: TextEncoderConfig, kind: str, device, progress, rotate: bool = False) -> dict:
+    """``rotate``: keep the ConvRot basis (lossless when the source already is INT8 ConvRot); the runtime then
+    rotates activations before the weight-only matmul."""
     units = _Units(out, 'text')
     prefix = 'model.language_model'
     embed_path = out / 'text' / 'embed.bin'
@@ -217,12 +219,12 @@ def convert_text(reader, out: Path, cfg: TextEncoderConfig, kind: str, device, p
         p = f'{prefix}.layers.{i}'
         writer = BlobWriter()
         qkv = torch.cat([reader.get(f'{p}.self_attn.{n}_proj.weight') for n in 'qkv'])
-        writer.add_linear('qkv', quantize_linear(qkv, kind, rotate=False, device=device))
-        writer.add_linear('o', quantize_linear(reader.get(f'{p}.self_attn.o_proj.weight'), kind, rotate=False,
+        writer.add_linear('qkv', quantize_linear(qkv, kind, rotate=rotate, device=device))
+        writer.add_linear('o', quantize_linear(reader.get(f'{p}.self_attn.o_proj.weight'), kind, rotate=rotate,
                                                device=device))
         gu = torch.cat([reader.get(f'{p}.mlp.gate_proj.weight'), reader.get(f'{p}.mlp.up_proj.weight')])
-        writer.add_linear('gate_up', quantize_linear(gu, kind, rotate=False, device=device))
-        writer.add_linear('down', quantize_linear(reader.get(f'{p}.mlp.down_proj.weight'), kind, rotate=False,
+        writer.add_linear('gate_up', quantize_linear(gu, kind, rotate=rotate, device=device))
+        writer.add_linear('down', quantize_linear(reader.get(f'{p}.mlp.down_proj.weight'), kind, rotate=rotate,
                                                   device=device))
         for name, key in (('input_norm', 'input_layernorm'), ('post_norm', 'post_attention_layernorm'),
                           ('q_norm', 'self_attn.q_norm'), ('k_norm', 'self_attn.k_norm')):
@@ -251,17 +253,25 @@ def text_config_from(path: Path) -> TextEncoderConfig:
         num_layers_used=min(50, raw.get('num_hidden_layers', 51) - 1))
 
 
-def convert(base: Path, adapter_dir: Path | None, official: Path | None, out: Path, *, policy='mixed',
-            text_kind='int8', sampler='balanced', device=None, with_text=True, progress=None) -> Path:
-    base, out = Path(base), Path(out)
+def convert(base: Path | None, adapter_dir: Path | None, official: Path | None, out: Path, *, policy='int8',
+            text_kind='int8', sampler='balanced', device=None, with_text=True, progress=None,
+            comfy_dit: Path | None = None, comfy_text: Path | None = None) -> Path:
+    """``base``: a diffusers MiniMax-H3-Pruned directory; or pass ``comfy_dit`` / ``comfy_text`` (Comfy-Org INT8
+    ConvRot single files) instead."""
+    out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
     progress = progress or (lambda stage, i, n: log.info('%s %d/%d', stage, i, n))
     t0 = time.time()
 
-    tdir = base / 'transformer'
-    cfg = dit_config_from(tdir)
-    reader = ShardedReader(tdir)
+    if comfy_dit is not None:
+        from .comfy import ComfyDiTView
+        cfg = DiTConfig()
+        reader = ComfyDiTView(Path(comfy_dit), cfg.num_layers, cfg.num_refiner_layers, cfg.inner_dim)
+    else:
+        base = Path(base)
+        cfg = dit_config_from(base / 'transformer')
+        reader = ShardedReader(base / 'transformer')
     adapter = None
     if adapter_dir is not None:
         adapter_dir = Path(adapter_dir)
@@ -269,8 +279,8 @@ def convert(base: Path, adapter_dir: Path | None, official: Path | None, out: Pa
     has_dwd = adapter is not None and bool(adapter.keys_with_prefix('dwd_pixel_refiner.'))
 
     manifest = {'format': FORMAT, 'created': time.strftime('%Y-%m-%dT%H:%M:%S'),
-                'recipe': {'policy': policy, 'text_kind': text_kind, 'sampler': sampler,
-                           'steps': SAMPLERS[sampler].steps if sampler in SAMPLERS else None,
+                'recipe': {'source': 'comfy-int8' if comfy_dit else 'diffusers', 'policy': policy, 'text_kind': text_kind, 'sampler': sampler,
+                           'steps': SAMPLERS[sampler].adapter_steps if sampler in SAMPLERS else None,
                            'adapter': str(adapter_dir.name) if adapter_dir else None, 'dwd': has_dwd}}
     convert_dit_globals(reader, adapter, out, cfg, has_dwd)
     manifest['dit'] = convert_dit(reader, adapter, out, cfg, policy, device, progress)
@@ -279,9 +289,14 @@ def convert(base: Path, adapter_dir: Path | None, official: Path | None, out: Pa
         dwd = convert_dwd(adapter, out)
         sol = SolConfig(num_layers=dwd['num_layers'])
         manifest['dwd'] = {**dwd, 'config': asdict(sol)}
-    if with_text and (base / 'text_encoder').exists():
-        tcfg = text_config_from(base / 'text_encoder')
-        manifest['text'] = convert_text(ShardedReader(base / 'text_encoder'), out, tcfg, text_kind, device, progress)
+    if with_text and comfy_text is not None:
+        from .comfy import ComfyTextView
+        manifest['text'] = convert_text(ComfyTextView(Path(comfy_text)), out, TextEncoderConfig(), 'int8', device,
+                                        progress, rotate=True)
+    elif with_text and base is not None and (Path(base) / 'text_encoder').exists():
+        tcfg = text_config_from(Path(base) / 'text_encoder')
+        manifest['text'] = convert_text(ShardedReader(Path(base) / 'text_encoder'), out, tcfg, text_kind, device,
+                                        progress)
     if official is not None:
         official = Path(official)
         for sub in ('audio_vae', 'tokenizer'):

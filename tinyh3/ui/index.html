@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinyH3 Video</title>
+<style>
+:root {
+  --bg: #0b0d12; --panel: #12151d; --panel2: #181c26; --line: #232838; --text: #e7e9ef; --muted: #8b92a6;
+  --accent: #7c5cff; --accent2: #22d3ee; --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+  --radius: 14px; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+:root[data-theme="light"] {
+  --bg: #f5f6fa; --panel: #ffffff; --panel2: #f0f2f7; --line: #dfe3ec; --text: #161a23; --muted: #5d6578;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+header { display: flex; align-items: center; gap: 14px; padding: 14px 22px; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); z-index: 5; }
+.logo { white-space: nowrap; font-weight: 800; letter-spacing: -.02em; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+.logo i { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), var(--accent2));
+  display: inline-block; box-shadow: 0 0 24px #7c5cff55; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.chip { padding: 4px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; white-space: nowrap; }
+.chip.ok { color: var(--ok); border-color: #34d39955; } .chip.warn { color: var(--warn); border-color: #fbbf2455; }
+main { display: grid; grid-template-columns: minmax(340px, 440px) 1fr; gap: 20px; padding: 20px 22px; max-width: 1500px; margin: 0 auto; }
+main > section { min-width: 0; }
+.job .top { min-width: 0; } .job .prompt { min-width: 0; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } header { padding: 12px 16px; position: static; flex-wrap: wrap; } .chips { margin-left: 0; order: 3; width: 100%; } #theme { margin-left: auto; } .modes { grid-template-columns: 1fr; } }
+html, body { overflow-x: hidden; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+.stack > * + * { margin-top: 14px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+textarea { width: 100%; min-height: 150px; resize: vertical; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px; outline: none; }
+textarea:focus, select:focus, input:focus { border-color: var(--accent); }
+.seg { display: flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; flex-wrap: wrap; }
+.seg button { flex: 1; border: 0; background: transparent; padding: 7px 8px; border-radius: 8px; cursor: pointer; color: var(--muted); min-width: 52px; }
+.seg button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 0 #0003, inset 0 0 0 1px var(--line); }
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mode { text-align: left; border: 1px solid var(--line); background: var(--panel2); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
+.mode b { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
+.mode b small { color: var(--muted); font-weight: 500; font-size: 11px; }
+.mode span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.35; }
+.mode.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset, 0 6px 24px #7c5cff22; }
+.mode.hot b { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.dur { display: grid; grid-template-columns: 1fr 86px; gap: 10px; align-items: center; }
+.dur input[type=number] { text-align: center; }
+.seg.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); }
+.seg button small { display: block; font-size: 11px; color: var(--muted); }
+.row { display: flex; gap: 10px; align-items: center; }
+.row > * { flex: 1; }
+label.f { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+input[type=number], select { width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; outline: none; }
+details summary { cursor: pointer; color: var(--muted); }
+.go { width: 100%; border: 0; border-radius: 12px; padding: 14px; font-weight: 700; font-size: 15px; cursor: pointer; color: white;
+  background: linear-gradient(135deg, var(--accent), #5b8cff); box-shadow: 0 8px 30px #7c5cff40; }
+.go:disabled { opacity: .5; cursor: not-allowed; }
+.est { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.kpi { background: var(--panel2); border-radius: 10px; padding: 10px; border: 1px solid var(--line); }
+.kpi b { display: block; font-size: 17px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.kpi span { color: var(--muted); font-size: 12px; }
+.tiers { display: flex; height: 8px; border-radius: 6px; overflow: hidden; background: var(--panel2); margin-top: 10px; }
+.tiers i { display: block; height: 100%; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.legend em { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+.note { font-size: 12px; color: var(--muted); }
+.note.bad { color: var(--bad); }
+.job { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: var(--panel2); }
+.job + .job { margin-top: 12px; }
+.job .top { display: flex; gap: 10px; align-items: baseline; }
+.job .prompt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 8px; margin-top: 12px; }
+.stage { font-size: 12px; color: var(--muted); }
+.stage .bar { height: 6px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 5px; }
+.stage .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .3s; }
+.stage.done { color: var(--ok); } .stage.done .bar i { width: 100%; background: var(--ok); }
+.stage.active { color: var(--text); }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.tile video { width: 100%; display: block; background: #000; aspect-ratio: 16/9; object-fit: contain; }
+.tile .meta { padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.tile .meta p { color: var(--text); margin: 0 0 6px; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tile .acts { display: flex; gap: 6px; padding: 0 12px 12px; }
+.btn { border: 1px solid var(--line); background: var(--panel2); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 12px; text-decoration: none; color: var(--text); }
+.btn:hover { border-color: var(--accent); }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); }
+.badge.failed { color: var(--bad); } .badge.done { color: var(--ok); } .badge.running { color: var(--accent2); }
+.empty { color: var(--muted); text-align: center; padding: 40px 10px; }
+.mono { font-family: var(--mono); }
+.toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1px solid var(--line); padding: 12px 16px; border-radius: 10px; box-shadow: 0 10px 30px #0006; display: none; z-index: 10; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><i></i>TinyH3 Video</div>
+  <div class="chips" id="chips"><span class="chip">загрузка…</span></div>
+  <button class="btn" id="theme" title="Светлая / тёмная тема">Тема</button>
+</header>
+<main>
+  <section class="stack">
+    <div class="card stack">
+      <div>
+        <h2>Промпт</h2>
+        <textarea id="prompt" placeholder="Опишите сцену, движение камеры, звук и реплики. Например: Live-action, handheld smartphone selfie video…"></textarea>
+      </div>
+      <div>
+        <label class="f">Режим</label>
+        <div class="modes" id="sampler"></div>
+      </div>
+      <div>
+        <label class="f">Разрешение</label>
+        <div class="seg grid" id="res"></div>
+      </div>
+      <div>
+        <label class="f">Соотношение сторон</label>
+        <div class="seg grid" id="aspect"></div>
+      </div>
+      <div>
+        <label class="f">Длительность, секунд (5.2–14.4, шаг ≈0.7 с — сетка кадров 17n+5)</label>
+        <div class="dur">
+          <input type="range" id="seconds" min="5.2" max="14.4" step="0.1" value="5.2">
+          <input type="number" id="secnum" min="5.2" max="14.4" step="0.1" value="5.2">
+        </div>
+      </div>
+      <div>
+        <label class="f">Выход (апскейл на Rust-ядре: Lanczos-3 + CAS)</label>
+        <div class="seg" id="upscale">
+          <button data-v="none">Как есть<small>родное</small></button>
+          <button data-v="1080p">1080p<small>апскейл</small></button>
+          <button data-v="2k">2K<small>1440p</small></button>
+        </div>
+      </div>
+      <details>
+        <summary>Дополнительно</summary>
+        <div class="stack" style="margin-top:12px">
+          <div class="row">
+            <div><label class="f">Seed (−1 = случайный)</label><input type="number" id="seed" value="-1"></div>
+            <div><label class="f">Внимание</label>
+              <select id="attention">
+                <option value="auto">Авто</option><option value="spark">Spark (разреженное)</option>
+                <option value="sage16">Sage, FP16-накопление</option><option value="sage">Sage</option><option value="sdpa">SDPA</option>
+              </select></div>
+          </div>
+          <div><label class="f">Spark (по умолчанию задаёт режим)</label>
+            <div class="seg" id="spark_mode">
+              <button data-v="">По режиму</button>
+              <button data-v="speed">Скорость<small>все шаги</small></button>
+              <button data-v="fidelity">Точность<small>20% плотные</small></button>
+            </div></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Оценка до запуска</h2>
+      <div class="est">
+        <div class="kpi"><b id="e-total">—</b><span>всего</span></div>
+        <div class="kpi"><b id="e-step">—</b><span>денойзинг</span></div>
+        <div class="kpi"><b id="e-size">—</b><span id="e-render">выход</span></div>
+      </div>
+      <div class="tiers" id="tiers"></div>
+      <div class="legend"><span><em style="background:var(--accent)"></em>VRAM</span><span><em style="background:var(--accent2)"></em>ОЗУ</span><span><em style="background:var(--warn)"></em>диск</span><span id="e-attn"></span></div>
+      <div class="note" id="e-notes" style="margin-top:8px"></div>
+    </div>
+
+    <button class="go" id="go">Сгенерировать</button>
+    <div class="note" id="advice"></div>
+  </section>
+
+  <section class="stack">
+    <div class="card">
+      <h2>Очередь</h2>
+      <div id="queue"><div class="empty">Нет активных задач</div></div>
+    </div>
+    <div>
+      <h2 style="margin-left:2px">Галерея</h2>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const STAGES = [['text', 'Текст'], ['load', 'Веса'], ['denoise', 'Денойзинг'], ['decode', 'DWD'], ['upscale', 'Апскейл'], ['audio', 'Звук/MP4']];
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem('th3.' + k)) ?? d; } catch { return d; } },
+                set(k, v) { try { localStorage.setItem('th3.' + k, JSON.stringify(v)); } catch {} } };
+const state = Object.assign({ sampler: 'fast', resolution: '480p', aspect: '16:9', spark_mode: '', upscale: 'none' }, store.get('form', {}));
+if (!['quality', 'balance', 'fast', 'fast-high'].includes(state.sampler)) state.sampler = 'fast';
+let MODES = {};
+let jobs = [];
+
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 4000); }
+function fmt(s) { if (s == null || isNaN(s)) return '—'; s = Math.round(s); return s < 60 ? s + ' с' : Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') + ' мин'; }
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function seg(id, values, key, labels) {
+  const el = $('#' + id);
+  if (values) el.innerHTML = values.map(v => `<button data-v="${v}">${labels ? labels(v) : v}</button>`).join('');
+  el.querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.v === state[key]);
+    b.onclick = () => { state[key] = b.dataset.v; seg(id, null, key); saveForm(); estimate(); };
+  });
+}
+function modes() {
+  const el = $('#sampler');
+  el.innerHTML = Object.entries(MODES).map(([k, m]) => `<button class="mode ${k === state.sampler ? 'on' : ''} ${k === 'fast-high' ? 'hot' : ''}" data-v="${k}">
+    <b>${esc(m.title)} <small>${m.steps} шага</small></b><span>${esc(m.about)}</span></button>`).join('');
+  el.querySelectorAll('button').forEach(b => b.onclick = () => { state.sampler = b.dataset.v; modes(); saveForm(); estimate(); });
+}
+function setSeconds(v) {
+  v = Math.min(14.4, Math.max(5.2, +v || 5.2));
+  $('#seconds').value = v; $('#secnum').value = v.toFixed(1);
+}
+function saveForm() {
+  state.seconds = +$('#seconds').value; state.seed = +$('#seed').value; state.attention = $('#attention').value;
+  state.prompt = $('#prompt').value; store.set('form', state);
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
+  return r.json();
+}
+
+async function loadInfo() {
+  const info = await api('/api/info');
+  const hw = info.hardware, chips = [];
+  chips.push(`<span class="chip">${esc(hw.gpu_name.replace('NVIDIA GeForce ', ''))} · ${hw.vram_total_gib} ГБ</span>`);
+  chips.push(`<span class="chip">ОЗУ ${hw.ram_total_gib} ГБ</span>`);
+  const spark = hw.spark || info.attention.includes('spark');
+  chips.push(`<span class="chip ${spark ? 'ok' : ''}" title="Spark-Attn: блочно-разреженное внимание">Spark ${spark ? '✓' : '—'}</span>`);
+  chips.push(`<span class="chip ${info.native ? 'ok' : ''}" title="Rust-ядро: параллельное чтение весов и апскейл">Rust core ${info.native ? '✓ ' + esc(info.native) : '—'}</span>`);
+  if (hw.unlocked === true) chips.push('<span class="chip ok">BF16 полная скорость</span>');
+  if (hw.unlocked === false) chips.push('<span class="chip warn" title="GeForce: BF16 с FP32-накоплением на половинной скорости. См. tinyh3 doctor">BF16 ½ скорости</span>');
+  chips.push(`<span class="chip ${info.models.length ? 'ok' : 'warn'}">${info.models.length ? esc(info.models[0]) : 'нет модели'}</span>`);
+  $('#chips').innerHTML = chips.join('');
+  $('#advice').textContent = (info.advice || []).slice(1).join(' ');
+  MODES = info.samplers; modes();
+  seg('res', info.resolutions, 'resolution');
+  seg('aspect', info.aspects, 'aspect');
+  if (!info.models.length) toast('Модель не найдена: выполните `tinyh3 setup`');
+}
+
+let estTimer;
+function estimate() {
+  clearTimeout(estTimer);
+  estTimer = setTimeout(async () => {
+    try {
+      const e = await api('/api/estimate', { method: 'POST', body: JSON.stringify({ seconds: +$('#seconds').value,
+        resolution: state.resolution, aspect: state.aspect, sampler: state.sampler, attention: $('#attention').value,
+        upscale: state.upscale }) });
+      $('#e-total').textContent = e.fits ? '≈ ' + fmt(e.est.total_s) : '✕';
+      $('#e-step').textContent = e.fits ? fmt(e.est.denoise_s) : '—';
+      $('#e-size').textContent = `${e.width}×${e.height}`;
+      const rendered = e.render[0] !== e.width || e.render[1] !== e.height;
+      $('#e-render').textContent = rendered ? `рендер ${e.render[0]}×${e.render[1]} → апскейл` : `выход · ${e.frames} кадров`;
+      $('#e-size').title = `${e.frames} кадров, ${e.tokens} токенов`;
+      const t = e.tiers, n = (t.vram + t.pinned + t.disk) || 1;
+      $('#tiers').innerHTML = `<i style="width:${100 * t.vram / n}%;background:var(--accent)"></i><i style="width:${100 * t.pinned / n}%;background:var(--accent2)"></i><i style="width:${100 * t.disk / n}%;background:var(--warn)"></i>`;
+      $('#e-attn').textContent = 'внимание: ' + e.attention;
+      const notes = $('#e-notes');
+      notes.className = 'note' + (e.fits ? '' : ' bad');
+      notes.textContent = e.fits ? `${t.vram} блоков в VRAM, ${t.pinned} в ОЗУ, ${t.disk} с диска. ` + (e.notes || []).join(' ') : e.reason;
+      $('#go').disabled = !e.fits;
+    } catch (err) { $('#e-notes').textContent = err.message; }
+  }, 200);
+}
+
+function stageHTML(job) {
+  const p = job.progress || {}, st = p.stages || {};
+  return STAGES.map(([k, name]) => {
+    const s = st[k] || {}, done = s.event === 'done' || (s.total && s.step >= s.total && k !== 'denoise');
+    const pct = s.total ? Math.min(100, 100 * s.step / s.total) : (done ? 100 : 0);
+    const label = k === 'denoise' && s.substep ? `${name} ${s.substep}/${s.steps}` : name;
+    const right = done && s.seconds != null ? ` · ${fmt(s.seconds)}` : (s.eta ? ` · ~${fmt(s.eta)}` : '');
+    return `<div class="stage ${done ? 'done' : (s.step != null ? 'active' : '')}">${label}${right}<div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join('');
+}
+
+function render() {
+  const active = jobs.filter(j => j.status === 'queued' || j.status === 'running');
+  $('#queue').innerHTML = active.length ? active.map(j => `
+    <div class="job"><div class="top"><span class="badge ${j.status}">${j.status === 'running' ? 'идёт' : 'в очереди'}</span>
+      <span class="prompt">${esc(j.request.prompt)}</span><button class="btn" onclick="cancelJob('${j.id}')">Отменить</button></div>
+      ${j.progress && j.progress.plan_summary ? `<div class="note" style="margin-top:6px">${esc(j.progress.plan_summary)}</div>` : ''}
+      <div class="stages">${stageHTML(j)}</div></div>`).join('') : '<div class="empty">Нет активных задач</div>';
+  const done = jobs.filter(j => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled');
+  $('#gallery').innerHTML = done.length ? done.map(j => {
+    const r = j.request, rep = j.report || {};
+    const media = j.status === 'done' ? `<video src="/api/videos/${j.id}" controls preload="metadata" playsinline></video>` :
+      `<div class="empty"><span class="badge ${j.status}">${j.status === 'failed' ? 'ошибка' : 'отменено'}</span><div class="note" style="margin-top:8px">${esc(j.error || '')}</div></div>`;
+    return `<div class="tile">${media}<div class="meta"><p>${esc(r.prompt)}</p>
+      ${esc((MODES[r.sampler] || {}).title || r.sampler)} · ${esc(r.resolution)}${r.upscale && r.upscale !== 'none' ? ' → ' + esc(r.upscale) : ''} · ${esc(r.aspect)} · ${r.seconds} с · seed <span class="mono">${rep.request ? rep.request.seed : r.seed}</span>
+      ${rep.total_seconds ? ' · ' + fmt(rep.total_seconds) : ''}</div>
+      <div class="acts">${j.status === 'done' ? `<a class="btn" href="/api/videos/${j.id}" download>Скачать</a>` : ''}
+      <button class="btn" onclick='reuse(${JSON.stringify(j.id)})'>Повторить</button>
+      <button class="btn" onclick='removeJob(${JSON.stringify(j.id)})'>Удалить</button></div></div>`;
+  }).join('') : '<div class="empty card">Здесь появятся готовые видео</div>';
+}
+
+async function refresh() { jobs = await api('/api/jobs'); render(); }
+async function cancelJob(id) { try { await api(`/api/jobs/${id}/cancel`, { method: 'POST' }); } catch (e) { toast(e.message); } }
+async function removeJob(id) { if (!confirm('Удалить запись и файл видео?')) return; await api(`/api/jobs/${id}?remove_file=true`, { method: 'DELETE' }); refresh(); }
+function reuse(id) {
+  const j = jobs.find(x => x.id === id); if (!j) return;
+  const r = j.request, seed = j.report && j.report.request ? j.report.request.seed : r.seed;
+  $('#prompt').value = r.prompt; $('#seed').value = seed; setSeconds(r.seconds);
+  Object.assign(state, { sampler: r.sampler, resolution: r.resolution, aspect: r.aspect, spark_mode: r.spark_mode || '', upscale: r.upscale || 'none' });
+  modes(); ['res', 'aspect', 'spark_mode', 'upscale'].forEach(id => seg(id, null, id === 'res' ? 'resolution' : id));
+  saveForm(); estimate(); window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+$('#go').onclick = async () => {
+  saveForm();
+  const prompt = $('#prompt').value.trim();
+  if (!prompt) { toast('Напишите промпт'); return; }
+  try {
+    await api('/api/jobs', { method: 'POST', body: JSON.stringify({ prompt, seconds: +$('#seconds').value, resolution: state.resolution,
+      aspect: state.aspect, sampler: state.sampler, seed: +$('#seed').value, attention: $('#attention').value,
+      spark_mode: state.spark_mode || null, upscale: state.upscale }) });
+    refresh();
+  } catch (e) { toast(e.message); }
+};
+
+function connect() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/events');
+  ws.onmessage = (m) => {
+    const e = JSON.parse(m.data), j = jobs.find(x => x.id === e.job);
+    if (e.type === 'status') { refresh(); if (e.status === 'failed') toast('Ошибка: ' + (e.error || '')); return; }
+    if (!j) return refresh();
+    j.progress = j.progress || { stages: {} };
+    if (e.stage) {
+      const s = j.progress.stages[e.stage] = Object.assign(j.progress.stages[e.stage] || {}, e);
+      if (e.stage === 'plan') j.progress.plan_summary = e.message;
+    }
+    render();
+  };
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+
+(function init() {
+  const theme = store.get('theme', null);
+  if (theme) document.documentElement.dataset.theme = theme;
+  $('#theme').onclick = () => { const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = t; store.set('theme', t); };
+  $('#prompt').value = state.prompt || '';
+  setSeconds(state.seconds || 5.2);
+  if (state.seed != null) $('#seed').value = state.seed;
+  if (state.attention) $('#attention').value = state.attention;
+  $('#seconds').oninput = () => { setSeconds($('#seconds').value); saveForm(); estimate(); };
+  $('#secnum').onchange = () => { setSeconds($('#secnum').value); saveForm(); estimate(); };
+  $('#attention').onchange = () => { saveForm(); estimate(); };
+  $('#prompt').oninput = saveForm;
+  seg('spark_mode', null, 'spark_mode'); seg('upscale', null, 'upscale');
+  loadInfo().then(estimate).catch(e => toast(e.message));
+  refresh(); connect();
+})();
+</script>
+</body>
+</html>

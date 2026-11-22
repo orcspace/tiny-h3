@@ -5,6 +5,8 @@ GPU. The runtime calls the same function with live measurements before every req
 """
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field, asdict
 
 from .config import DIT, TEXT, SOL, Geometry
@@ -140,7 +142,7 @@ def bit_reversal_order(n: int) -> list[int]:
 def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'int8', steps: int = 4,
               sizes: list[int] | None = None, kinds: list[str] | None = None, attention: str = 'auto',
               text_cached: bool = False, te_bytes: int | None = None, force_head_group: int | None = None,
-              force_ffn_chunk: int | None = None, max_resident: int | None = None) -> Plan:
+              force_ffn_chunk: int | None = None, max_resident: int | None = None, mode=None) -> Plan:
     kinds = kinds or block_kinds(policy)
     sizes = sizes or [block_bytes(k) for k in kinds]
     n = len(sizes)
@@ -162,11 +164,11 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'int8', steps: 
 
     # 0. Attention backend. Spark needs every head of a layer at once (plus permuted copies), so it is only chosen
     #    when that working set leaves room for weights; otherwise a dense backend runs per head group.
-    plan.attention = choose_attention(hw, attention, seq)
+    plan.attention = choose_attention(hw, attention, seq, mode.topk if mode is not None else 0.1)
     if plan.attention == 'spark' and not force_head_group:
         spark_act = activation_bytes(seq, DIT.num_heads, 2048) + seq * (DIT.hidden_size + 4)
         if spark_act + globals_bytes + 4 * min(sizes) > 0.7 * vram_budget:
-            plan.notes.append('Spark-Attn не помещается по памяти при такой длине — плотное внимание')
+            plan.notes.append('Spark-Attn не помещается в память при такой длине, используется плотное внимание')
             plan.attention = choose_attention(hw, 'dense', seq)
         else:
             force_head_group, force_ffn_chunk = DIT.num_heads, force_ffn_chunk or 2048
@@ -241,6 +243,9 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'int8', steps: 
     plan.ram_budget = ram_budget = max(hw.ram_available - ram_reserve - host_working, 0)
     pin_cap = int((0.5 if windows else 0.7) * hw.ram_total)
     budget = min(ram_budget, pin_cap)
+    streamed_bytes = sum(sizes[i] for i in streamed)
+    if streamed_bytes > budget:
+        budget -= 2 * max((sizes[i] for i in streamed), default=0)  # pinned bounce buffers of the disk reader
     pinned, used = [], 0
     for i in sorted(streamed, key=lambda j: bit_reversal_order(n).index(j)):
         if used + sizes[i] <= budget:
@@ -255,7 +260,7 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'int8', steps: 
         if ram_budget - used < 2 * plan.slot_bytes:
             plan.notes.append('мало ОЗУ под буферы чтения с диска — возможны паузы')
 
-    plan.est = estimate(hw, geometry, plan, sizes, steps, text_cached, te_bytes)
+    plan.est = estimate(hw, geometry, plan, sizes, steps, text_cached, te_bytes, mode)
     plan.fits = True
     if plan.disk:
         plan.notes.append(f'{len(plan.disk)} блоков читаются с диска каждый шаг '
@@ -267,18 +272,25 @@ SPARK_SPEEDUP = 2.6   # attention-time reduction of Spark 'speed' mode on H3 (pi
 SAGE_SPEEDUP = 1.8
 
 
-def choose_attention(hw: Hardware, wanted: str, seq: int) -> str:
+def choose_attention(hw: Hardware, wanted: str, seq: int, topk: float = 0.1) -> str:
+    """'dense': the fastest dense backend; 'auto': the fastest of that and Spark (when the sequence is long enough
+    for Spark to engage). A dense backend that is as fast is preferred: it is exact."""
     if wanted not in ('auto', 'dense'):
         return wanted
+    dense_options = (['sage', 'sage16'] if hw.sage else []) + ['sdpa']
+    dense = max(dense_options, key=lambda b: attention_rate(hw, b))
     if wanted == 'auto' and hw.spark and seq >= 8192:
-        return 'spark'
-    if hw.sage:
-        return 'sage' if hw.unlocked else 'sage16'
-    return 'sdpa'
+        spark_rate = attention_rate(hw, 'spark') * 0.385 / (topk + 0.285)
+        if spark_rate > 1.05 * attention_rate(hw, dense):
+            return 'spark'
+    return dense
 
 
 def attention_rate(hw: Hardware, backend: str) -> float:
-    """Effective dense-equivalent attention FLOP/s."""
+    """Effective dense-equivalent attention FLOP/s: measured by `tinyh3 bench` when available, else modeled."""
+    measured = (hw.attention_ms or {}).get(backend)
+    if measured and measured == measured and backend != 'spark':
+        return 4.0 * 16384 * 16384 * 8 * 128 / (measured / 1000)
     bf16 = max(hw.fp16_tflops, 1.0) * 1e12 * 0.65
     if backend == 'spark':
         return bf16 * SPARK_SPEEDUP
@@ -289,35 +301,72 @@ def attention_rate(hw: Hardware, backend: str) -> float:
     return bf16
 
 
-def estimate(hw: Hardware, geometry: Geometry, plan: Plan, sizes: list[int], steps: int, text_cached: bool,
-             te_bytes: int | None) -> dict:
-    seq = geometry.sequence_length
+def _step_compute(hw, seq, n_blocks, backend, topk=0.1):
     int8_eff = max(hw.int8_tops, 1.0) * 1e12 * 0.55
-    attn_rate = attention_rate(hw, plan.attention)
+    rate = attention_rate(hw, backend)
+    if backend == 'spark':  # attention time ~ (exact fraction + routing/tail overhead), calibrated to 2.6x at 10%
+        rate *= 0.385 / (topk + 0.285)
     lin = 2.0 * seq * DIT.block_params() / int8_eff
-    attn = 4.0 * seq * seq * DIT.inner_dim / attn_rate
+    attn = 4.0 * seq * seq * DIT.inner_dim / rate
     misc = seq * DIT.hidden_size * 2 * 24 / 300e9
-    block_s = lin + attn + misc
-    compute = block_s * len(sizes)
-    streamed = [i for i in range(len(sizes)) if i not in plan.resident]
+    return (lin + attn + misc) * n_blocks, lin + attn + misc
+
+
+def draft_geometry(geometry: Geometry, scale: float) -> Geometry:
+    """The two-pass draft canvas: both sides scaled by ``scale``, multiples of 32."""
+    h = max(32, round(geometry.height * scale / 32) * 32)
+    w = max(32, round(geometry.width * scale / 32) * 32)
+    return Geometry(h, w, geometry.num_frames, geometry.text_tokens)
+
+
+def estimate(hw: Hardware, geometry: Geometry, plan: Plan, sizes: list[int], steps: int, text_cached: bool,
+             te_bytes: int | None, mode=None) -> dict:
+    """Seconds per stage. ``mode`` (config.SamplerPreset) adds dense warm-up steps, Spark top-k and the draft pass."""
+    n = len(sizes)
+    seq = geometry.sequence_length
+    dense = choose_attention(hw, 'dense', seq)
+    sparse = plan.attention == 'spark'
+    topk = mode.topk if mode is not None else 0.1
+    dense_steps = 0
+    if sparse and mode is not None and mode.spark_mode == 'fidelity':
+        dense_steps = math.ceil(steps * 0.2)
+    full_steps = steps
+    draft_s = 0.0
+    if mode is not None and mode.draft_scale:
+        full_steps -= 1
+        draft_seq = draft_geometry(geometry, mode.draft_scale).sequence_length
+        draft_s, _ = _step_compute(hw, draft_seq, n, dense)
+    compute, block_s = _step_compute(hw, seq, n, plan.attention, topk)
+    compute_dense, _ = _step_compute(hw, seq, n, dense)
+    streamed = [i for i in range(n) if i not in plan.resident]
     pcie = sum(sizes[i] for i in streamed) / (hw.pcie_gbps * 1e9)
     disk = plan.disk_bytes / (hw.disk_gbps * 1e9)
-    step = max(compute, pcie, disk) + 0.05 * len(sizes) * 0.01
+    step = max(compute, pcie, disk)
+    step_dense = max(compute_dense, pcie, disk)
+    draft = max(draft_s, pcie, disk) if draft_s else 0.0
+    denoise = draft + dense_steps * step_dense + max(full_steps - dense_steps, 0) * step
     load = (plan.resident_bytes + plan.pinned_bytes) / (hw.disk_gbps * 1e9)
     te = 0.0 if text_cached else (te_bytes or text_encoder_bytes('int8')) / (hw.disk_gbps * 1e9) + 3.0
     sol_tokens = geometry.latent_t * (geometry.latent_h // 2 * 2) * (geometry.latent_w // 2 * 2)
     dwd = 2.0 * sol_tokens * sol_params() / (max(hw.fp16_tflops, 1.0) * 1e12 * 0.5) + 2.0
-    total = te + load + steps * step + dwd + 4.0
-    return {'block_s': round(block_s, 3), 'step_s': round(step, 2), 'compute_s': round(compute, 2),
-            'pcie_s': round(pcie, 2), 'disk_s': round(disk, 2), 'load_s': round(load, 1),
-            'text_s': round(te, 1), 'dwd_s': round(dwd, 1), 'total_s': round(total, 1),
-            'stall_s': round(max(0.0, max(pcie, disk) - compute) * steps, 2)}
+    upscale = 0.0
+    if mode is not None and mode.final_scale < 1.0:
+        frames = geometry.num_frames
+        out_px = geometry.height * geometry.width / (mode.final_scale ** 2)
+        upscale = frames * out_px * 3 * 40 / (8 * 1.5e9)  # Lanczos-3 + CAS, ~40 ops/sample, 8 cores
+    total = te + load + denoise + dwd + upscale + 4.0
+    return {'upscale_s': round(upscale, 1), 'block_s': round(block_s, 3), 'step_s': round(step, 2), 'draft_s': round(draft, 2),
+            'denoise_s': round(denoise, 1), 'compute_s': round(compute, 2), 'pcie_s': round(pcie, 2),
+            'disk_s': round(disk, 2), 'load_s': round(load, 1), 'text_s': round(te, 1), 'dwd_s': round(dwd, 1),
+            'total_s': round(total, 1), 'stall_s': round(max(0.0, max(pcie, disk) - compute) * steps, 2)}
 
 
 def quick_plan(vram_gib: float, ram_gib: float, height: int, width: int, seconds: float, policy='int8',
-               steps=4, gpu='RTX 3070', disk_gbps=2.0, unlocked=False, spark=True, attention='auto') -> Plan:
+               steps=None, gpu='RTX 3070', disk_gbps=2.0, unlocked=False, spark=True, attention='auto',
+               mode='fast') -> Plan:
     from .hardware import simulated
-    from .config import frames_for_seconds
+    from .config import frames_for_seconds, SAMPLERS
+    preset = SAMPLERS[mode]
     hw = simulated(vram_gib, ram_gib, gpu, disk_gbps, unlocked=unlocked, spark=spark)
-    return make_plan(hw, Geometry(height, width, frames_for_seconds(seconds)), policy=policy, steps=steps,
-                     attention=attention)
+    return make_plan(hw, Geometry(height, width, frames_for_seconds(seconds)), policy=policy,
+                     steps=steps or preset.steps, attention=attention, mode=preset)

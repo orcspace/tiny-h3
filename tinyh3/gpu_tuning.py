@@ -147,3 +147,25 @@ def advice(prof: TensorProfile | None, os_name: str) -> list[str]:
     elif prof.unlocked:
         tips.append('Полная скорость BF16: TinyH3 использует BF16-ядра внимания.')
     return tips
+
+
+def measure_attention(tokens: int = 16384, heads: int = 8, head_dim: int = 128) -> dict:
+    """Milliseconds per dense attention call for every available backend (stored with the profile)."""
+    import torch
+    from .runtime.attention import attention, available
+    q, k, v = (torch.randn(tokens, heads, head_dim, device='cuda', dtype=torch.bfloat16) for _ in range(3))
+    out = {}
+    for name in available():
+        if name == 'spark':
+            continue
+        try:
+            out[name] = round(_time_op(lambda: attention(q, k, v, name), warmup=2, iters=5) * 1000, 2)
+        except Exception as exc:  # a backend that fails on this GPU is simply not listed
+            out[name] = float('nan')
+    try:
+        raw = json.loads(_path().read_text())
+        raw.setdefault('attention_ms', {})[str(tokens)] = out
+        _path().write_text(json.dumps(raw, indent=1))
+    except (OSError, ValueError):
+        pass
+    return out

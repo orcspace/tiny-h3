@@ -124,6 +124,9 @@ class Store:
     def read_into(self, group: str, index: int, buffer: torch.Tensor, chunk: int = 64 << 20) -> None:
         """Read one unit into a CPU uint8 ``buffer`` (pinned or not) with large sequential reads."""
         nbytes = self.unit_nbytes(group, index)
+        from . import native
+        if buffer.is_contiguous() and native.read_into(self.unit_path(group, index), 0, buffer, nbytes):
+            return
         target = buffer[:nbytes].numpy()
         with open(self.unit_path(group, index), 'rb', buffering=0) as f:
             view = memoryview(target)
