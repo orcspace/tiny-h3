@@ -15,6 +15,10 @@ import traceback
 def _child(name, args, q):
     try:
         import logging
+        import os
+        import sys
+        if sys.platform != 'win32':  # weights stream through many differently sized buffers: avoid fragmentation
+            os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
         logging.basicConfig(level=logging.WARNING)
         from .pipeline import STAGES
 
@@ -54,7 +58,7 @@ def run_stage(name: str, args: tuple, on_event, cancel=None, poll: float = 0.25)
                         kind, payload = q.get(timeout=1.0)
                     except queue.Empty:
                         raise StageError(name, {'type': 'Crash', 'message': f'процесс завершился с кодом '
-                                                f'{proc.exitcode}', 'oom': False, 'traceback': ''})
+                                                f'{proc.exitcode}', 'oom': False, 'traceback': ''}) from None
                 else:
                     continue
             if kind == 'event':

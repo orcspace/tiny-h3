@@ -202,7 +202,6 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'int8', steps: 
     #    the streamed ones across the stack so every copy overlaps the compute of resident neighbours.
     slots = 3 if vram_budget >= 14 * GiB else 2
     plan.slots = slots
-    order = sorted(range(n), key=lambda i: (-sizes[i], i))
     room = vram_budget - globals_bytes - plan.activation
     resident: set[int] = set()
     by_kind = {}
@@ -247,7 +246,8 @@ def make_plan(hw: Hardware, geometry: Geometry, *, policy: str = 'int8', steps: 
     if streamed_bytes > budget:
         budget -= 2 * max((sizes[i] for i in streamed), default=0)  # pinned bounce buffers of the disk reader
     pinned, used = [], 0
-    for i in sorted(streamed, key=lambda j: bit_reversal_order(n).index(j)):
+    rank = {unit: r for r, unit in enumerate(bit_reversal_order(n))}
+    for i in sorted(streamed, key=rank.__getitem__):
         if used + sizes[i] <= budget:
             pinned.append(i)
             used += sizes[i]

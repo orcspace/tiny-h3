@@ -77,11 +77,20 @@ def quantize_linear(w: torch.Tensor, kind: str, *, rotate: bool = True, device='
 
 
 class _Units:
-    """Writes units of one group, skipping those already finished (resume)."""
+    """Writes units of one group, skipping those already finished (resume).
 
-    def __init__(self, root: Path, group: str):
+    ``recipe`` identifies how the units are made (policy, source, adapters): units left by an interrupted run with a
+    different recipe are discarded instead of being silently mixed into the new model.
+    """
+
+    def __init__(self, root: Path, group: str, recipe: str = ''):
         self.dir = root / group
         self.dir.mkdir(parents=True, exist_ok=True)
+        stamp = self.dir / '.recipe'
+        if stamp.exists() and stamp.read_text() != recipe:
+            for f in self.dir.glob('unit_*'):
+                f.unlink()
+        stamp.write_text(recipe)
 
     def done(self, index: int) -> dict | None:
         side = self.dir / f'unit_{index:03d}.json'
@@ -121,7 +130,7 @@ def _block_linears(writer, reader, adapter, prefix, kind, device):
 
 
 def convert_dit(reader, adapter, out: Path, cfg: DiTConfig, policy: str, device, progress, group='dit') -> dict:
-    units = _Units(out, group)
+    units = _Units(out, group, f'{policy}|{type(reader).__name__}|{getattr(adapter, "meta", None)}|{len(reader.keys())}')
     kinds = block_kinds(policy, cfg.num_layers)
     basis = reader.get('adaln_basis') if 'adaln_basis' in reader else None
     mean = reader.get('adaln_mean') if 'adaln_mean' in reader else None
@@ -228,15 +237,22 @@ def write_visual(reader, out: Path, config_dir: Path | None) -> None:
     if vis and not target.exists():
         getter = reader.f.get if hasattr(reader, 'f') and not all(k in reader for k in vis.values()) else reader.get
         save_file({k: getter(v).to(torch.bfloat16).contiguous() for k, v in vis.items()}, str(target))
+    target_cfg = out / 'text' / 'config.json'
     if config_dir is not None and (Path(config_dir) / 'config.json').exists():
-        shutil.copy(Path(config_dir) / 'config.json', out / 'text' / 'config.json')
+        shutil.copy(Path(config_dir) / 'config.json', target_cfg)
+    elif vis and not target_cfg.exists():
+        try:  # the config is a few KB: fetch it rather than leave image prompts without a vision tower
+            from huggingface_hub import hf_hub_download
+            shutil.copy(hf_hub_download('MiniMaxAI/MiniMax-H3', 'text_encoder/config.json'), target_cfg)
+        except Exception as exc:
+            log.warning('could not fetch text_encoder/config.json (%s): image prompts will be unavailable', exc)
 
 
 def convert_text(reader, out: Path, cfg: TextEncoderConfig, kind: str, device, progress, rotate: bool = False,
                  config_dir: Path | None = None) -> dict:
     """``rotate``: keep the ConvRot basis (lossless when the source already is INT8 ConvRot); the runtime then
     rotates activations before the weight-only matmul."""
-    units = _Units(out, 'text')
+    units = _Units(out, 'text', f'{kind}|{rotate}|{type(reader).__name__}|{len(reader.keys())}')
     prefix = 'model.language_model'
     embed_path = out / 'text' / 'embed.bin'
     if not embed_path.exists():

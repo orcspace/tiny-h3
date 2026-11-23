@@ -30,7 +30,11 @@ def _qwen3vl(store: Store, device):
     from accelerate import init_empty_weights
     from transformers import Qwen3VLConfig, Qwen3VLModel
     from safetensors.torch import load_file
-    cfg = Qwen3VLConfig(**json.loads(store.path('text/config.json').read_text()))
+    config_path = store.path('text/config.json')
+    if not config_path.exists() or not store.path('text/visual.safetensors').exists():
+        raise FileNotFoundError('в модели нет зрения Qwen3-VL (text/config.json, text/visual.safetensors): картинки и '
+                                'референсы не поддерживаются этой установкой. Переустановите: `tinyh3 setup`')
+    cfg = Qwen3VLConfig(**json.loads(config_path.read_text()))
     with init_empty_weights():
         model = Qwen3VLModel(cfg)
     weights = load_file(str(store.path('text/visual.safetensors')))

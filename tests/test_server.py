@@ -103,3 +103,18 @@ def test_server_tasks_and_uploads(tiny_store, tmp_path, monkeypatch):
         assert rec['status'] == 'done', rec.get('error')
         assert rec['request']['task'] == 'i2v' and rec['request']['first'].endswith(a['id'])
         assert client.get(f"/api/videos/{job['id']}").status_code == 200
+
+
+def test_cross_origin_writes_are_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv('TINYH3_HOME', str(tmp_path / 'home'))
+    from fastapi.testclient import TestClient
+    from tinyh3.server.app import create_app
+    client = TestClient(create_app(subprocess=False))
+    with client:
+        evil = {'Origin': 'https://evil.example'}
+        assert client.post('/api/jobs', json={'prompt': 'w1'}, headers=evil).status_code == 403
+        assert client.post('/api/uploads?name=a.png', content=b'x', headers=evil).status_code == 403
+        assert client.delete('/api/jobs/abc', headers=evil).status_code == 403
+        assert client.get('/api/info', headers=evil).status_code == 200            # reads stay open
+        same = {'Origin': 'http://testserver'}                                       # the page's own origin
+        assert client.post('/api/jobs', json={'prompt': '  '}, headers=same).status_code == 400

@@ -7,7 +7,6 @@ the 16 GB of RAM, and every stage starts from an empty CUDA allocator.
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 from dataclasses import dataclass, asdict, field

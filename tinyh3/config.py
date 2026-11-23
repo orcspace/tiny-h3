@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 
@@ -180,6 +180,10 @@ RESOLUTIONS = {
     '768p': 768 * 1344,
 }
 ASPECT_RATIOS = ('21:9', '16:9', '4:3', '1:1', '3:4', '9:16')
+
+# Small files of the official repo every conversion needs: audio VAE, tokenizer, image / video processor and the
+# conditioner's config (the vision tower is rebuilt from it).
+OFFICIAL_PATTERNS = ['audio_vae/*', 'tokenizer/*', 'processor/*', 'text_encoder/config.json']
 
 SOURCES = {
     'base_repo': 'multimodalart/MiniMax-H3-Pruned',

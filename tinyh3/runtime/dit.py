@@ -11,7 +11,6 @@ as functions over weight views so that:
 """
 from __future__ import annotations
 
-import math
 import time
 
 import torch

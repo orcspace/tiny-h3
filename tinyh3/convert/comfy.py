@@ -161,7 +161,7 @@ class ComfyTextView(_QuantView):
 def download(target: Path, sampler: str = 'balanced', token=None) -> dict:
     """~52 GB: Comfy-Org int8 DiT + text tower, the pi-H3 adapter, the audio VAE and tokenizer."""
     from huggingface_hub import hf_hub_download, snapshot_download
-    from ..config import SAMPLERS, SOURCES
+    from ..config import OFFICIAL_PATTERNS, SAMPLERS, SOURCES
     target = Path(target)
     dit = hf_hub_download(COMFY_REPO, COMFY_DIT, local_dir=target / 'comfy', token=token)
     text = hf_hub_download(COMFY_REPO, COMFY_TEXT, local_dir=target / 'comfy', token=token)
@@ -169,7 +169,7 @@ def download(target: Path, sampler: str = 'balanced', token=None) -> dict:
     adapter = snapshot_download(SOURCES['adapter_repo'], local_dir=target / 'adapter', token=token,
                                 allow_patterns=[f'{preset.adapter}/*'])
     official = snapshot_download(SOURCES['official_repo'], local_dir=target / 'official', token=token,
-                                 allow_patterns=['audio_vae/*', 'tokenizer/*'])
+                                 allow_patterns=OFFICIAL_PATTERNS)
     return {'dit': dit, 'text': text, 'adapter': str(Path(adapter) / preset.adapter), 'official': official}
 
 

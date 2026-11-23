@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from ..config import DIT, AUDIO_CHANNELS, VIDEO_TAG, AUDIO_TAG, TEXT_TAG, Geometry, audio_latents
+from ..config import DIT, AUDIO_CHANNELS, VIDEO_TAG, AUDIO_TAG, Geometry, audio_latents
 
 ROPE_FRAME_RESCALE = 5.0 / 3.0
 ROPE_FRAMES_PER_LATENT = (1, 4, 4, 4, 4)

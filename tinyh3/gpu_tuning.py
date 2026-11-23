@@ -160,7 +160,7 @@ def measure_attention(tokens: int = 16384, heads: int = 8, head_dim: int = 128) 
             continue
         try:
             out[name] = round(_time_op(lambda: attention(q, k, v, name), warmup=2, iters=5) * 1000, 2)
-        except Exception as exc:  # a backend that fails on this GPU is simply not listed
+        except Exception:  # a backend that fails on this GPU is simply not listed
             out[name] = float('nan')
     try:
         raw = json.loads(_path().read_text())

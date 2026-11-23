@@ -61,6 +61,11 @@ def cmd_doctor(a):
         print('Triton: да (слитые ядра и int8 GEMM)')
     except ImportError:
         print('Triton: нет — будут использованы медленные PyTorch-фоллбэки')
+    if models_dir().exists():
+        from .hardware import measure_disk
+        speed = measure_disk(models_dir())
+        if speed:
+            print(f'Диск с моделью: ≈ {speed:.1f} ГБ/с (читается при стриминге блоков)')
     prof = profile(refresh=a.refresh) if hw.vram_total else None
     for tip in advice(prof, hw.os):
         print('•', tip)
@@ -147,11 +152,11 @@ def cmd_setup(a):
     if a.source == 'comfy' and a.low_disk:
         from .convert.comfy import COMFY_REPO, COMFY_DIT, COMFY_TEXT
         from .convert.remote import hub_url
-        from .config import SOURCES
+        from .config import OFFICIAL_PATTERNS, SOURCES
         from huggingface_hub import snapshot_download
         print('Режим low-disk: веса читаются с Hub по частям и сразу квантуются, исходники на диск не сохраняются.')
         official = snapshot_download(SOURCES['official_repo'], local_dir=src / 'official',
-                                     allow_patterns=['audio_vae/*', 'tokenizer/*', 'processor/*'])
+                                     allow_patterns=OFFICIAL_PATTERNS)
         adapter = hub_url(SOURCES['adapter_repo'], f'{preset.adapter}/diffusion_pytorch_model.safetensors')
         print(f'Конвертация в {out}…')
         convert(None, adapter, Path(official), out, policy=a.policy, text_kind=a.text, sampler=a.sampler,

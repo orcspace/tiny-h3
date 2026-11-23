@@ -7,15 +7,15 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import asdict, fields
+from dataclasses import fields
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from .. import __version__
-from ..config import RESOLUTIONS, ASPECT_RATIOS, SAMPLERS, SAMPLER_ALIASES, REF_SAMPLER, UPSCALE, MIN_SECONDS, home, models_dir, \
+from ..config import RESOLUTIONS, ASPECT_RATIOS, SAMPLERS, SAMPLER_ALIASES, REF_SAMPLER, UPSCALE, home, models_dir, \
     canvas_size, frames_for_seconds, Geometry, render_size, output_size
 from ..runtime.pipeline import GenRequest, generate
 
@@ -184,6 +184,18 @@ def create_app(*, subprocess: bool = True) -> FastAPI:
         yield
 
     app = FastAPI(title='TinyH3 Video', version=__version__, lifespan=lifespan)
+
+    @app.middleware('http')
+    async def same_origin_only(request: Request, call_next):
+        """State-changing requests must come from this server's own pages: browsers send ``Origin`` on cross-site
+        POST / DELETE, and a web page you visit must not be able to start jobs or delete videos on localhost."""
+        origin = request.headers.get('origin')
+        if origin and request.method not in ('GET', 'HEAD', 'OPTIONS'):
+            from urllib.parse import urlparse
+            if urlparse(origin).netloc != request.headers.get('host', ''):
+                from fastapi.responses import JSONResponse
+                return JSONResponse({'detail': 'cross-origin request refused'}, status_code=403)
+        return await call_next(request)
     jobs = Jobs(home() / 'jobs.sqlite3')
     queue: list[str] = []
     cv = threading.Condition()
@@ -307,8 +319,6 @@ def create_app(*, subprocess: bool = True) -> FastAPI:
 
     @app.post('/api/estimate')
     def estimate(body: EstimateIn):
-        from ..hardware import probe
-        from ..planner import make_plan
         mode = SAMPLERS[SAMPLER_ALIASES.get(body.sampler, body.sampler)]
         if body.task == 'ref2v':
             mode = REF_SAMPLER

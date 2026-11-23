@@ -174,3 +174,20 @@ def test_move_text_dir(tmp_path):
     assert not (model / 'text.moving').exists()
     with pytest.raises(ValueError):
         diskplan.move_dir(model / 'text', tmp_path / 'again')
+
+
+def test_official_files_cover_what_the_converter_needs():
+    from tinyh3.config import OFFICIAL_PATTERNS
+    # every folder the converter copies into a model, and the conditioner config the vision tower is built from
+    assert {'audio_vae/*', 'tokenizer/*', 'processor/*', 'text_encoder/config.json'} <= set(OFFICIAL_PATTERNS)
+
+
+def test_resume_discards_units_of_another_recipe(tmp_path):
+    from tinyh3.convert.convert import _Units
+    from tinyh3.store import BlobWriter
+    w = BlobWriter()
+    w.add('x', torch.zeros(4))
+    u = _Units(tmp_path, 'dit', 'int8')
+    u.write(0, w)
+    assert _Units(tmp_path, 'dit', 'int8').done(0) is not None        # same recipe: resumed
+    assert _Units(tmp_path, 'dit', 'int4').done(0) is None            # different recipe: rebuilt

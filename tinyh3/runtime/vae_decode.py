@@ -11,7 +11,6 @@ import json
 
 import torch
 
-from ..config import VAE_SPATIAL
 from ..store import Store
 
 PIXEL_MEAN = (0.485, 0.456, 0.406)

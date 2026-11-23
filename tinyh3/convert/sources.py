@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from ..config import SOURCES, SAMPLERS
+from ..config import OFFICIAL_PATTERNS, SOURCES, SAMPLERS
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ def download(target: Path, sampler: str = 'balanced', text_encoder: bool = True,
         allow_patterns=[f'{preset.adapter}/*'])
     official = snapshot_download(
         SOURCES['official_repo'], local_dir=target / 'official', token=token,
-        allow_patterns=['audio_vae/*', 'tokenizer/*'])
+        allow_patterns=OFFICIAL_PATTERNS)
     return {'base': base, 'adapter': adapter, 'official': official}
 
 
