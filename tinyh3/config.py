@@ -71,6 +71,7 @@ class TextEncoderConfig:
     rms_norm_eps: float = 1e-6
     rope_theta: float = 5_000_000.0
     num_layers_used: int = 50
+    mrope_section: tuple = (24, 20, 20)
 
     def linear_shapes(self) -> dict:
         d, q, kv, ffn = self.hidden_size, self.num_heads * self.head_dim, self.num_kv_heads * self.head_dim, \
@@ -156,6 +157,11 @@ SAMPLERS = {
     'fast-high': SamplerPreset('fast-high', 'Fast-high', 2, 2, 12.0, 3.0, 0.93, 0.6, 'pi_h3_2step_dwd_adapter',
                                spark_mode='speed', topk=0.08, draft_scale=0.5, final_scale=0.75),
 }
+# Ref2VA runs its own transformer with lightx2v's Ref2VA turbo LoRA: 4 steps on q = [1, .75, .5, .25], no CFG.
+REF_SAMPLER = SamplerPreset('ref', 'Референсы · Turbo 4', 4, 4, 12.0, 3.0, 1.0, 1.0,
+                            'minimax_h3_ref2v_turbo_4step_v1.0_768p_bf16', spark_mode='fidelity')
+REF_ADAPTER_REPO = 'lightx2v/Minimax-h3-Turbo'
+REF_ADAPTER_FILE = 'minimax_h3_ref2v_turbo_4step_v1.0_768p_bf16.safetensors'
 SAMPLER_ALIASES = {'turbo': 'fast', 'balanced': 'quality'}
 
 # Output upscaling targets (short side, pixels), applied after DWD by the native Lanczos + CAS upscaler.

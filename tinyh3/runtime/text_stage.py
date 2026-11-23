@@ -39,7 +39,12 @@ def tokenizer_for(store: Store):
 
 def text_config(store: Store) -> TextEncoderConfig:
     raw = store.manifest.get('text', {}).get('config')
-    return TextEncoderConfig(**raw) if raw else TEXT
+    if not raw:
+        return TEXT
+    raw = dict(raw)
+    if 'mrope_section' in raw:
+        raw['mrope_section'] = tuple(raw['mrope_section'])
+    return TextEncoderConfig(**raw)
 
 
 def rms(x, w, eps):
@@ -94,15 +99,26 @@ def _weights(tensors, unit):
 
 
 def encode_tokens(store: Store, token_ids: list[int], device, *, tiers=None, progress=None,
-                  dtype=None) -> torch.Tensor:
-    """hidden_states[num_layers_used] of the Qwen3 text tower, (T, hidden) in ``dtype``."""
+                  dtype=None, vision_inputs: dict | None = None) -> torch.Tensor:
+    """hidden_states[num_layers_used] of the Qwen3 text tower, (T, hidden) in ``dtype``. With ``vision_inputs``
+    (processor outputs for the presentation's image / video blocks) the Qwen3-VL multimodal prefix is applied:
+    vision embeddings, 3-axis M-RoPE and deepstack."""
     from .streamer import UnitStreamer
     cfg = text_config(store)
     dev = torch.device(device)
     dtype = dtype or (BF16 if dev.type == 'cuda' else torch.float32)
-    emb = embedding_rows(store.path(store.manifest['text']['embed']['file']), token_ids, cfg.hidden_size)
-    h = emb.to(dev, dtype)
-    rope = rope_1d(len(token_ids), cfg.head_dim, cfg.rope_theta, dev)
+    mm = None
+    if vision_inputs:
+        from .vision import prepare, mrope_tables
+        mm = prepare(store, token_ids, vision_inputs, dev, dtype)
+        h = mm.embeds
+        rope = mrope_tables(mm.positions, cfg.head_dim, cfg.rope_theta, cfg.mrope_section, dev)
+        if dev.type == 'cuda':
+            torch.cuda.empty_cache()
+    else:
+        emb = embedding_rows(store.path(store.manifest['text']['embed']['file']), token_ids, cfg.hidden_size)
+        h = emb.to(dev, dtype)
+        rope = rope_1d(len(token_ids), cfg.head_dim, cfg.rope_theta, dev)
     n = len(store.units('text'))
     streamer = UnitStreamer(store, 'text', device=dev, tiers=tiers or {i: 'disk' for i in range(n)}, slots=2,
                             passes=1)
@@ -113,6 +129,10 @@ def encode_tokens(store: Store, token_ids: list[int], device, *, tiers=None, pro
             tensors = streamer.acquire(i)
             h = qwen3_layer(h, _weights(tensors, units[i]), cfg, rope)
             streamer.release(i, tensors)
+            # transformers records a layer's output before adding deepstack features, so the last layer we keep
+            # never gets them (H3 reads layer 50; deepstack touches layers 0-2)
+            if mm is not None and mm.visual_mask is not None and i < len(mm.deepstack) and i < n - 1:
+                h[mm.visual_mask] = h[mm.visual_mask] + mm.deepstack[i].to(h.dtype)
             if progress:
                 progress(i + 1, n)
     finally:
@@ -120,43 +140,52 @@ def encode_tokens(store: Store, token_ids: list[int], device, *, tiers=None, pro
     return h
 
 
-def refine(store: Store, text_hidden: torch.Tensor, device) -> torch.Tensor:
-    """context_embedder + token refiner + final norm -> (T, dit hidden) bf16."""
-    cfg = config_from_manifest(store.manifest['dit'].get('config'))
+def refine(store: Store, text_hidden: torch.Tensor, device, group: str = 'refiner',
+           dit_group: str = 'dit') -> torch.Tensor:
+    """context_embedder + token refiner + final norm -> (T, dit hidden) bf16. ``group``: the refiner of the
+    transformer that will consume the rows ('refiner' for FL2VA, 'refiner_ref' for Ref2VA)."""
+    cfg = config_from_manifest(store.manifest[dit_group].get('config'))
     dev = torch.device(device)
     dtype = BF16 if dev.type == 'cuda' else torch.float32
-    u0 = store.load_unit('refiner', 0, dev)
+    u0 = store.load_unit(group, 0, dev)
     rec = linear_records(u0['tensors'], u0['unit'])
     x = K.dense_linear(text_hidden.to(dev, dtype), rec['ctx'], u0['tensors']['ctx_bias'])
     x = x.to(BF16) if dev.type == 'cuda' else x
-    units = store.units('refiner')
+    units = store.units(group)
     for i in range(1, len(units)):
-        u = store.load_unit('refiner', i, dev)
+        u = store.load_unit(group, i, dev)
         plain_block(x, _weights(u['tensors'], u['unit']), cfg=cfg, head_group=cfg.num_heads)
     return ref.rms_norm(x, u0['tensors']['final_norm'], cfg.final_norm_eps).to(BF16)
 
 
-def prompt_key(store: Store, token_ids: list[int]) -> str:
+def prompt_key(store: Store, token_ids: list[int], extra: str = '') -> str:
     h = hashlib.sha256()
     h.update(json.dumps({'store': str(store.root.resolve()), 'created': store.manifest.get('created'),
-                         'kind': store.manifest.get('text', {}).get('kind')}).encode())
+                         'kind': store.manifest.get('text', {}).get('kind'), 'extra': extra}).encode())
     h.update(json.dumps(token_ids).encode())
     return h.hexdigest()[:32]
 
 
-def text_stage(store: Store, prompt: str, device='cuda', *, tiers=None, progress=None, use_cache=True):
-    """Returns ``(text_states (T, D) bf16 on CPU, token_tags (T,), cached: bool)``."""
-    token_ids = tokenizer_for(store)(prompt)
+def text_stage(store: Store, prompt: str, device='cuda', *, tiers=None, progress=None, use_cache=True, cond=None,
+               refiner: str = 'refiner', dit_group: str = 'dit'):
+    """Returns ``(text_states (T, D) bf16 on CPU, token_tags (T,), cached: bool)``. ``cond``
+    (``conditioning.Conditioning``) supplies the presentation of image / reference prompts."""
+    if cond is None:
+        token_ids = tokenizer_for(store)(prompt)
+        tags = torch.full((len(token_ids),), TEXT_TAG, dtype=torch.long)
+        vision, extra = None, ''
+    else:
+        token_ids, tags = cond.token_ids, torch.as_tensor(cond.token_tags, dtype=torch.long)
+        vision, extra = cond.vision_inputs or None, cond.media_digest
     if not token_ids:
         raise ValueError('пустой промпт')
-    tags = torch.full((len(token_ids),), TEXT_TAG, dtype=torch.long)
-    key = prompt_key(store, token_ids)
+    key = prompt_key(store, token_ids, extra + refiner)
     path = cache_dir() / 'prompts' / f'{key}.safetensors'
     if use_cache and path.exists():
         from safetensors.torch import load_file
         return load_file(str(path))['text_states'], tags, True
-    hidden = encode_tokens(store, token_ids, device, tiers=tiers, progress=progress)
-    states = refine(store, hidden, device).cpu()
+    hidden = encode_tokens(store, token_ids, device, tiers=tiers, progress=progress, vision_inputs=vision)
+    states = refine(store, hidden, device, group=refiner, dit_group=dit_group).cpu()
     if use_cache:
         from safetensors.torch import save_file
         path.parent.mkdir(parents=True, exist_ok=True)

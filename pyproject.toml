@@ -17,6 +17,10 @@ dependencies = [
   "huggingface_hub>=0.25",
   "diffusers>=0.40",          # audio VAE (AutoencoderKLMiniMaxH3Audio)
   "av>=12",                   # H.264 + AAC muxing
+  "torchvision",              # Qwen3-VL image / video processor (image and reference prompts)
+  "transformers>=5",          # Qwen3-VL vision tower and position indexing
+  "accelerate",
+  "pillow",
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",  # includes websockets for live progress
   "pydantic>=2",

@@ -161,3 +161,14 @@ def download(target: Path, sampler: str = 'balanced', token=None) -> dict:
     official = snapshot_download(SOURCES['official_repo'], local_dir=target / 'official', token=token,
                                  allow_patterns=['audio_vae/*', 'tokenizer/*'])
     return {'dit': dit, 'text': text, 'adapter': str(Path(adapter) / preset.adapter), 'official': official}
+
+
+def download_ref(target: Path, token=None) -> dict:
+    """Ref2VA: Comfy-Org's INT8 ConvRot Ref2VA transformer (21 GB) and lightx2v's Ref2VA turbo LoRA (1.4 GB)."""
+    from huggingface_hub import hf_hub_download
+    from ..config import REF_ADAPTER_FILE, REF_ADAPTER_REPO
+    target = Path(target)
+    dit = hf_hub_download(COMFY_REPO, 'diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors',
+                          local_dir=target / 'comfy', token=token)
+    lora = hf_hub_download(REF_ADAPTER_REPO, REF_ADAPTER_FILE, local_dir=target / 'ref_adapter', token=token)
+    return {'dit': dit, 'adapter': lora}

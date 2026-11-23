@@ -31,8 +31,11 @@ class Adapter:
         self.alpha_keys = alphas
         meta = {}
         try:
-            raw = reader.metadata().get('lora_adapter_metadata')
+            file_meta = reader.metadata() or {}
+            raw = file_meta.get('lora_adapter_metadata')
             meta = json.loads(raw) if raw else {}
+            if 'lora_alpha' not in meta and 'alpha' in file_meta:  # lightx2v: {'alpha': '8'} for every module
+                meta['lora_alpha'] = float(file_meta['alpha'])
         except Exception:
             meta = {}
         self.meta = meta
@@ -41,7 +44,7 @@ class Adapter:
         if module in self.alpha_keys:
             return float(self.reader.get(self.alpha_keys[module]).item()) / rank
         alpha = self.meta.get('lora_alpha')
-        r = self.meta.get('r', rank)
+        r = self.meta.get('r', rank) if 'r' in self.meta else rank
         if alpha is not None:
             alpha_pattern = self.meta.get('alpha_pattern') or {}
             alpha = alpha_pattern.get(module, alpha)

@@ -117,11 +117,48 @@ def cmd_setup(a):
         print(f'Конвертация в {out}…')
         convert(Path(paths['base']), Path(paths['adapter']) / preset.adapter, Path(paths['official']), out,
                 policy=a.policy, text_kind=a.text, sampler=a.sampler, progress=_convert_progress())
+    _ensure_vae(out, decoder=False)
+    if a.ref:
+        _setup_ref(a, src, out)
     if a.delete_sources:
         import shutil
         shutil.rmtree(src, ignore_errors=True)
         print(f'\nИсходники удалены: {src}')
     print(f'\nГотово: {out}\nЗапуск: tinyh3 serve --open')
+
+
+def _ensure_vae(out: Path, decoder: bool):
+    """Video-VAE encoder (keyframes, reference images; ~0.7 GB) and optionally decoder (Ref2VA; ~4.8 GB fp16),
+    read from the Hub with range requests: the 10 GB checkpoint is never downloaded as a whole."""
+    from .convert.remote import fetch_vae
+    from .config import SOURCES
+    print('\nVAE (энкодер' + (' и декодер' if decoder else '') + ') …')
+    fetch_vae(SOURCES['official_repo'], out, decoder=decoder)
+    m = json.loads((out / 'manifest.json').read_text())
+    m['vae'] = {'encoder': 'vae/encoder.safetensors',
+                'decoder': 'vae/decoder.safetensors' if (out / 'vae' / 'decoder.safetensors').exists() else None}
+    (out / 'manifest.json').write_text(json.dumps(m, indent=1))
+
+
+def _setup_ref(a, src: Path, out: Path):
+    from .convert.comfy import download_ref
+    from .convert.convert import convert
+    print(f'\nRef2VA: Comfy-Org INT8 (~21 ГБ) + LoRA Turbo 4 (~1.4 ГБ) в {src}…')
+    paths = download_ref(src)
+    _ensure_vae(out, decoder=True)
+    print('Конвертация Ref2VA…')
+    convert(None, None, None, out, policy=a.policy, only_ref=True, ref_dit=Path(paths['dit']),
+            ref_adapter=Path(paths['adapter']), progress=_convert_progress())
+
+
+def cmd_setup_ref(a):
+    """Add Ref2VA (references → video) to an existing model."""
+    stores = sorted(p.parent for p in models_dir().glob('*/manifest.json')) if models_dir().exists() else []
+    if not stores:
+        raise SystemExit('сначала `tinyh3 setup`')
+    out = Path(a.model) if a.model else stores[0]
+    _setup_ref(a, Path(a.sources), out)
+    print(f'\nГотово: Ref2VA добавлен в {out}')
 
 
 def _convert_progress():
@@ -143,11 +180,27 @@ def cmd_convert(a):
     print(f'\nГотово: {out}')
 
 
+REF_KINDS = {'.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.webp': 'image', '.bmp': 'image',
+             '.mp4': 'video', '.mov': 'video', '.mkv': 'video', '.webm': 'video',
+             '.wav': 'audio', '.mp3': 'audio', '.flac': 'audio', '.m4a': 'audio', '.ogg': 'audio'}
+
+
 def cmd_generate(a):
     from .runtime.pipeline import GenRequest, generate
+    refs = []
+    for item in a.ref or []:
+        kind, _, path = item.partition('=') if '=' in item and item.split('=')[0] in ('image', 'video', 'audio') \
+            else (REF_KINDS.get(Path(item).suffix.lower(), ''), '', item)
+        if kind not in ('image', 'video', 'audio'):
+            raise SystemExit(f'не удалось определить тип референса: {item}')
+        refs.append({'kind': kind, 'path': str(Path(path).expanduser())})
+    task = a.task or ('ref2v' if refs else 'flf2v' if (a.first and a.last) else 'i2v' if a.first
+                      else 'last2v' if a.last else 't2v')
     req = GenRequest(prompt=a.prompt, seconds=a.seconds, resolution=a.res, aspect=a.aspect, sampler=a.sampler,
                      seed=a.seed, attention=a.attention, spark_mode=a.spark_mode, model=a.model, output=a.out,
-                     height=a.height, width=a.width, upscale=a.upscale)
+                     height=a.height, width=a.width, upscale=a.upscale, task=task, first=a.first, last=a.last,
+                     references=refs)
+    print(f'задача: {task}' + (f', референсов: {len(refs)}' if refs else ''))
     t0 = time.time()
     report = generate(req, _printer(), subprocess=not a.in_process)
     print(f"Видео: {report['output']}  ({time.time() - t0:.1f} с)")
@@ -211,7 +264,14 @@ def main(argv=None):
     s.add_argument('--source', default='comfy', choices=['comfy', 'hf'],
                    help='comfy: готовые INT8 ConvRot от Comfy-Org (~52 ГБ); hf: bf16 оригиналы (~95 ГБ)')
     s.add_argument('--delete-sources', action='store_true', help='удалить скачанные исходники после конвертации')
+    s.add_argument('--ref', action='store_true', help='сразу добавить Ref2VA (референсы → видео, +~27 ГБ)')
     s.set_defaults(fn=cmd_setup)
+
+    sr = sub.add_parser('setup-ref', help='добавить Ref2VA (референсы → видео) к готовой модели')
+    sr.add_argument('--sources', default=str(Path.home() / '.tinyh3' / 'sources'))
+    sr.add_argument('--model', help='папка модели (по умолчанию первая)')
+    sr.add_argument('--policy', default='int8', choices=['int8', 'mixed', 'int4'])
+    sr.set_defaults(fn=cmd_setup_ref)
 
     c = sub.add_parser('convert', help='сконвертировать локальные HF-веса')
     c.add_argument('--base', help='папка MiniMax-H3-Pruned (transformer/, text_encoder/)')
@@ -235,6 +295,12 @@ def main(argv=None):
     g.add_argument('--spark-mode', default=None, choices=['speed', 'fidelity'], help='переопределить режим Spark')
     g.add_argument('--model')
     g.add_argument('--out')
+    g.add_argument('--task', choices=['t2v', 'i2v', 'last2v', 'flf2v', 'ref2v'],
+                   help='по умолчанию выбирается по аргументам')
+    g.add_argument('--first', help='первый кадр (изображение): image → video')
+    g.add_argument('--last', help='последний кадр (изображение)')
+    g.add_argument('--ref', action='append',
+                   help='референс: путь (тип по расширению) или image=/video=/audio=путь; можно повторять')
     g.add_argument('--in-process', action='store_true', help='без отдельных процессов на стадии (отладка)')
     g.set_defaults(fn=cmd_generate)
 

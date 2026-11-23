@@ -15,7 +15,7 @@ from pathlib import Path
 
 import torch
 
-from ..config import (SAMPLERS, SAMPLER_ALIASES, UPSCALE, Geometry, canvas_size, frames_for_seconds, RESOLUTIONS,
+from ..config import (SAMPLERS, SAMPLER_ALIASES, REF_SAMPLER, UPSCALE, Geometry, canvas_size, frames_for_seconds, RESOLUTIONS,
                       FPS, AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, SolConfig, outputs_dir, cache_dir, render_size,
                       output_size)
 from ..store import Store
@@ -37,6 +37,10 @@ class GenRequest:
     crf: int = 18
     model: str | None = None        # store directory; default: the first converted model
     output: str | None = None
+    task: str = 't2v'               # t2v | i2v | last2v | flf2v | ref2v (see runtime.conditioning.TASKS)
+    first: str | None = None        # first-frame image path (i2v, flf2v)
+    last: str | None = None         # last-frame image path (last2v, flf2v)
+    references: list = field(default_factory=list)  # ref2v: [{'kind': 'image' | 'video' | 'audio', 'path': ...}]
 
     def resolve(self) -> 'GenRequest':
         r = GenRequest(**asdict(self))
@@ -52,11 +56,29 @@ class GenRequest:
             raise ValueError(f'режим должен быть одним из {list(SAMPLERS)}')
         if r.upscale not in UPSCALE:
             raise ValueError(f'upscale должен быть одним из {list(UPSCALE)}')
+        from .conditioning import TASKS
+        if r.task not in TASKS:
+            raise ValueError(f'задача должна быть одной из {list(TASKS)}')
+        if r.task in ('i2v', 'flf2v') and not r.first:
+            raise ValueError('нужен первый кадр')
+        if r.task in ('last2v', 'flf2v') and not r.last:
+            raise ValueError('нужен последний кадр')
+        if r.task == 'ref2v':
+            if not r.references:
+                raise ValueError('нужен хотя бы один референс')
+            if all(ref.get('kind') == 'audio' for ref in r.references):
+                raise ValueError('аудио-референс нужно дополнить изображением или видео')
         return r
 
     @property
     def preset(self):
+        if self.task == 'ref2v':
+            return REF_SAMPLER
         return SAMPLERS[SAMPLER_ALIASES.get(self.sampler, self.sampler)]
+
+    @property
+    def group(self) -> str:
+        return 'dit_ref' if self.task == 'ref2v' else 'dit'
 
     @property
     def num_frames(self) -> int:
@@ -83,21 +105,69 @@ def default_model(adapter_steps: int | None = None) -> Path | None:
 
 # ---------------------------------------------------------------------------------------------------- stages
 
-def stage_text(model: str, prompt: str, emit) -> dict:
+def stage_text(model: str, req: dict, emit) -> dict:
+    """Prompt presentation (+ keyframes / references), streamed text tower, refiner -> one artifact file."""
+    from safetensors.torch import save_file
     from .text_stage import text_stage
+    from ..planner import draft_geometry
+    r = GenRequest(**req)
+    preset = r.preset
     store = Store(model)
+    dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     # Text layers are read exactly once per prompt, so pinning them first would only add a copy: every layer goes
     # through the disk reader, which keeps two layers ahead of the GPU (the OS page cache keeps re-used files warm).
     tiers = {i: 'disk' for i in range(len(store.units('text')))}
     t0 = time.time()
+    run_h, run_w = render_size(r.height, r.width, preset.final_scale)
+    tensors, info = {}, {'task': r.task}
+    cond = None
+    if r.task != 't2v':
+        from .conditioning import Conditioner
+        emit(stage='text', step=0, total=1, message='кадры и референсы')
+        conditioner = Conditioner(store, dev)
+        cond = conditioner.prepare(r.task, r.prompt, run_h, run_w, r.num_frames, first=r.first, last=r.last,
+                                   references=r.references)
+        for i, c in enumerate(cond.condition_latents):
+            tensors[f'cond_{i}'] = c.float().contiguous()
+        for i, c in enumerate(cond.audio_condition_latents):
+            tensors[f'acond_{i}'] = c.float().contiguous()
+        info['anchors'] = list(cond.anchors)
+        if cond.packed is not None:
+            for name, t in zip(('pos', 'ptags', 'vidx', 'aidx', 'tidx'), cond.packed[:5]):
+                tensors[f'packed_{name}'] = torch.as_tensor(t).contiguous()
+            info['packed_n_cond'] = int(cond.packed[5])
+            info['packed_n_cond_audio'] = int(cond.packed[6])
+        if preset.draft_scale and r.task in ('i2v', 'last2v', 'flf2v'):
+            d = draft_geometry(Geometry(run_h, run_w, r.num_frames), preset.draft_scale)
+            for i, c in enumerate(conditioner.keyframe_latents(r.task, d.height, d.width, first=r.first,
+                                                               last=r.last)):
+                tensors[f'dcond_{i}'] = c.float().contiguous()
+        del conditioner
     states, tags, cached = text_stage(
-        store, prompt, 'cuda' if torch.cuda.is_available() else 'cpu', tiers=tiers,
+        store, r.prompt, dev, tiers=tiers, cond=cond,
+        refiner='refiner_ref' if r.task == 'ref2v' else 'refiner', dit_group=r.group,
         progress=lambda i, total: emit(stage='text', step=i, total=total))
+    tensors.update(text_states=states.contiguous(), tags=torch.as_tensor(tags, dtype=torch.long))
     path = cache_dir() / 'runs' / f'text-{os.getpid()}-{int(t0 * 1000)}.safetensors'
     path.parent.mkdir(parents=True, exist_ok=True)
-    from safetensors.torch import save_file
-    save_file({'text_states': states.contiguous(), 'tags': tags}, str(path))
-    return {'text': str(path), 'cached': cached, 'seconds': round(time.time() - t0, 2)}
+    save_file(tensors, str(path), metadata={'info': json.dumps(info)})
+    return {'text': str(path), 'cached': cached, 'seconds': round(time.time() - t0, 2), **info}
+
+
+def _load_artifact(path):
+    from safetensors import safe_open
+    with safe_open(path, 'pt') as f:
+        tensors = {k: f.get_tensor(k) for k in f.keys()}
+        info = json.loads((f.metadata() or {}).get('info', '{}'))
+    return tensors, info
+
+
+def _listed(tensors, prefix):
+    out, i = [], 0
+    while f'{prefix}_{i}' in tensors:
+        out.append(tensors[f'{prefix}_{i}'])
+        i += 1
+    return out
 
 
 def patchify(latents: torch.Tensor, patch=(1, 2, 2)) -> torch.Tensor:
@@ -123,8 +193,17 @@ def upsample_latents(x0: torch.Tensor, h: int, w: int) -> torch.Tensor:
     return up.permute(1, 0, 2, 3)[None]
 
 
+def _noised_condition_rows(latents: list, gen, patch, device, aug):
+    """Keyframe / reference latents noised to MiniMax-H3's conditioning level and packed into rows."""
+    rows = []
+    for c in latents:
+        noise = torch.randn(c.shape, generator=gen)
+        rows.append(patchify(aug * c.float() + (1 - aug) * noise, patch))
+    return torch.cat(rows).to(device) if rows else None
+
+
 def stage_denoise(model: str, req: dict, text_path: str, emit) -> dict:
-    from safetensors.torch import load_file, save_file
+    from safetensors.torch import save_file
     from ..hardware import probe
     from ..planner import make_plan, draft_geometry
     from .dit import DiT, Request
@@ -134,16 +213,26 @@ def stage_denoise(model: str, req: dict, text_path: str, emit) -> dict:
 
     r = GenRequest(**req)
     preset = r.preset
+    group = r.group
     store = Store(model)
+    if group not in store.manifest:
+        raise FileNotFoundError('в модели нет трансформера Ref2VA: `tinyh3 setup --ref`')
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    text = load_file(text_path)
+    text, info = _load_artifact(text_path)
     text_states, tags = text['text_states'], text['tags']
     run_h, run_w = render_size(r.height, r.width, preset.final_scale)
     geom = Geometry(run_h, run_w, r.num_frames, text_tokens=text_states.shape[0])
+    if 'packed_pos' in text:
+        layout = Layout.from_packed(geom, (text['packed_pos'], text['packed_ptags'], text['packed_vidx'],
+                                           text['packed_aidx'], text['packed_tidx'], info['packed_n_cond'],
+                                           info['packed_n_cond_audio']))
+    else:
+        layout = Layout.build(geom, tags, tuple(info.get('anchors', ())))
     hw = probe()
-    units = store.units('dit')
-    kinds = store.manifest['dit'].get('kinds') or ['int8'] * len(units)
-    plan = make_plan(hw, geom, sizes=[u['nbytes'] for u in units], kinds=kinds, steps=preset.steps,
+    units = store.units(group)
+    kinds = store.manifest[group].get('kinds') or ['int8'] * len(units)
+    plan_geom = Geometry(run_h, run_w, r.num_frames, text_tokens=layout.seq - geom.video_rows - geom.audio_rows)
+    plan = make_plan(hw, plan_geom, sizes=[u['nbytes'] for u in units], kinds=kinds, steps=preset.steps,
                      attention=r.attention, mode=preset)
     if not plan.fits:
         raise MemoryError(plan.reason)
@@ -159,15 +248,19 @@ def stage_denoise(model: str, req: dict, text_path: str, emit) -> dict:
     t_load = time.time()
     dit = DiT(store, device=dev, tiers={i: plan.tier(i) for i in range(len(units))}, slots=plan.slots,
               head_group=plan.head_group, ffn_chunk=plan.ffn_chunk, attention_backend=dense, spark=None,
-              progress=lambda i, n: emit(stage='load', step=i, total=n))
+              group=group, progress=lambda i, n: emit(stage='load', step=i, total=n))
     load_s = time.time() - t_load
     cfg = dit.cfg
 
-    layout = Layout.build(geom, tags)
     request = Request(layout, dev, cfg)
     gen = torch.Generator().manual_seed(int(r.seed))
+    # draw order: conditioning noise, video noise, audio noise (then draft-pass noise)
+    cond_rows = _noised_condition_rows(_listed(text, 'cond'), gen, cfg.patch_size, dev, KEYFRAME_NOISE_AUG)
+    acond = _listed(text, 'acond')
+    acond_rows = torch.cat(acond).to(dev) if acond else None
     noise = torch.randn((1, cfg.in_channels, geom.latent_t, geom.latent_h, geom.latent_w), generator=gen)
-    audio = torch.randn((layout.audio_idx.numel(), cfg.audio_in_channels), generator=gen).to(dev)
+    n_target_audio = layout.audio_idx.numel() - layout.n_cond_audio
+    audio = torch.randn((n_target_audio, cfg.audio_in_channels), generator=gen).to(dev)
     noise_rows = patchify(noise, cfg.patch_size).to(dev)
     vs = FlowEuler(preset.steps, preset.shift, preset.max_raw_t, preset.final_step_size_scale)
     aus = FlowEuler(preset.steps, preset.audio_shift, preset.max_raw_t, preset.final_step_size_scale)
@@ -182,27 +275,32 @@ def stage_denoise(model: str, req: dict, text_path: str, emit) -> dict:
         emit(stage='denoise', step=done, total=total_blocks, substep=i + 1, steps=preset.steps,
              eta=round(elapsed / done * (total_blocks - done), 1))
 
-    def run_step(i, req_i, lay_i, video_rows, features_wanted):
+    def run_step(i, req_i, lay_i, video_rows, cond_i, features_wanted):
         tv, ta = vs.model_t(i), aus.model_t(i)
         t_unique, t_index = row_timesteps(lay_i.video_idx, lay_i.audio_idx, lay_i.n_cond, n_text, tv, ta,
-                                          max(tv, KEYFRAME_NOISE_AUG))
-        out_v, out_a, feats = dit.forward(req_i, video_rows, audio, text_states, t_unique, t_index,
+                                          max(tv, KEYFRAME_NOISE_AUG), lay_i.n_cond_audio, 1.0)
+        v_all = video_rows if cond_i is None else torch.cat([cond_i, video_rows.to(cond_i.dtype)])
+        a_all = audio if acond_rows is None else torch.cat([acond_rows.to(audio.dtype), audio])
+        out_v, out_a, feats = dit.forward(req_i, v_all, a_all, text_states, t_unique, t_index,
                                           want_features=features_wanted, on_block=lambda b, _dt: progress(i, b))
-        return -out_v.float(), -out_a.float(), feats
+        return -out_v[lay_i.n_cond:].float(), -out_a[lay_i.n_cond_audio:].float(), feats
 
     video = noise_rows
     first = 0
+    use_dwd = group == 'dit' and 'dwd' in store.manifest
     if draft:
         # Two-pass: step 0 on a smaller canvas (1/4 of the tokens at scale 0.5). Its clean estimate x0 is
         # upsampled and re-noised to the next noise level with the full-resolution noise; at sigma ~0.87 the
         # transformer re-draws all detail, so the upsampling blur does not survive.
         t0 = time.time()
         dgeom = draft_geometry(geom, preset.draft_scale)
-        dlayout = Layout.build(dgeom, tags)
+        dgeom = Geometry(dgeom.height, dgeom.width, dgeom.num_frames, text_tokens=n_text)
+        dlayout = Layout.build(dgeom, tags, tuple(info.get('anchors', ())))
         dreq = Request(dlayout, dev, cfg)
+        dcond = _noised_condition_rows(_listed(text, 'dcond'), gen, cfg.patch_size, dev, KEYFRAME_NOISE_AUG)
         dnoise = torch.randn((1, cfg.in_channels, dgeom.latent_t, dgeom.latent_h, dgeom.latent_w), generator=gen)
         drows = patchify(dnoise, cfg.patch_size).to(dev)
-        vel, avel, _ = run_step(0, dreq, dlayout, drows, False)
+        vel, avel, _ = run_step(0, dreq, dlayout, drows, dcond, False)
         sigma0, sigma1 = float(vs.sigmas[0]), float(vs.sigmas[1])
         x0 = drows.float() - sigma0 * vel
         x0 = upsample_latents(unpatchify(x0, dgeom.latent_t, dgeom.latent_h, dgeom.latent_w, cfg.in_channels,
@@ -216,24 +314,31 @@ def stage_denoise(model: str, req: dict, text_path: str, emit) -> dict:
     for i in range(first, preset.steps):
         t0 = time.time()
         last = i == preset.steps - 1
-        vel, avel, feats = run_step(i, request, layout, video, last)
+        vel, avel, feats = run_step(i, request, layout, video, cond_rows, last and use_dwd)
         video = vs.step(i, vel, video.float())
         audio = aus.step(i, avel, audio.float())
-        if last:
+        if last and use_dwd:
             features = feats.cpu()
         if dev.type == 'cuda':
             torch.cuda.synchronize()
         step_times.append(round(time.time() - t0, 2))
     dit.close()
     stats = dit.streamer.stats.as_dict()
-    n_audio = layout.audio_idx.numel() // AUDIO_CHANNELS
+    n_audio = n_target_audio // AUDIO_CHANNELS
     audio_latents = audio.reshape(AUDIO_CHANNELS, n_audio, -1).permute(0, 2, 1).contiguous().cpu()
     out = cache_dir() / 'runs' / f'denoise-{os.getpid()}-{int(time.time() * 1000)}.safetensors'
-    save_file({'features': features.contiguous(), 'audio_latents': audio_latents}, str(out))
+    payload = {'audio_latents': audio_latents}
+    if use_dwd:
+        payload['features'] = features.contiguous()
+    else:
+        payload['latents'] = unpatchify(video.float().cpu(), geom.latent_t, geom.latent_h, geom.latent_w,
+                                        cfg.in_channels, cfg.patch_size).contiguous()
+    save_file(payload, str(out))
     peak = torch.cuda.max_memory_allocated() if dev.type == 'cuda' else 0
     return {'denoise': str(out), 'grid': [geom.latent_t, geom.latent_h // 2, geom.latent_w // 2],
             'render': [run_w, run_h], 'step_seconds': step_times, 'load_seconds': round(load_s, 2),
             'stream': stats, 'attention': plan.attention, 'spark': spark.summary() if spark else None,
+            'decoder': 'dwd' if use_dwd else 'vae', 'conditioning_rows': [layout.n_cond, layout.n_cond_audio],
             'vram_peak_gib': round(peak / (1 << 30), 2), 'plan': plan.as_dict()}
 
 
@@ -246,11 +351,17 @@ def stage_decode(model: str, req: dict, denoise_path: str, grid: list, output: s
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data = load_file(denoise_path)
     t0 = time.time()
-    head = DWDHead(store.load_safetensors(store.manifest['dwd']['file']),
-                   SolConfig(**store.manifest['dwd']['config']), device=dev)
-    frames = head.decode(data['features'], tuple(grid),
-                         on_chunk=lambda i, n: emit(stage='decode', step=i, total=n))
-    del head
+    if 'features' in data:
+        head = DWDHead(store.load_safetensors(store.manifest['dwd']['file']),
+                       SolConfig(**store.manifest['dwd']['config']), device=dev)
+        frames = head.decode(data['features'], tuple(grid),
+                             on_chunk=lambda i, n: emit(stage='decode', step=i, total=n))
+        del head
+    else:
+        from .vae_decode import decode as vae_decode
+        emit(stage='decode', step=0, total=1, message='VAE-декодер')
+        frames = vae_decode(store, data['latents'], dev)
+        emit(stage='decode', step=1, total=1)
     if dev.type == 'cuda':
         torch.cuda.empty_cache()
     frames = frames[:r.num_frames]
@@ -289,7 +400,7 @@ def generate(request: GenRequest, on_event=None, *, subprocess: bool = True, can
     from .worker import run_stage
     on_event = on_event or (lambda e: None)
     r = request.resolve()
-    found = default_model(r.preset.adapter_steps)
+    found = default_model(None if r.task == 'ref2v' else r.preset.adapter_steps)
     model = r.model or (str(found) if found else None)
     if not model:
         raise FileNotFoundError('нет сконвертированной модели: запустите `tinyh3 setup`')
@@ -313,7 +424,7 @@ def generate(request: GenRequest, on_event=None, *, subprocess: bool = True, can
         on_event({'stage': name, 'event': 'done', 'result': result})
         return result
 
-    text = call('text', model, r.prompt)
+    text = call('text', model, asdict(r))
     den = call('denoise', model, asdict(r), text['text'])
     call('decode', model, asdict(r), den['denoise'], den['grid'], output)
     try:

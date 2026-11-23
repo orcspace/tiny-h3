@@ -34,7 +34,15 @@ class ShardedReader:
 
     def __init__(self, root: Path):
         from safetensors import safe_open
-        self.root = Path(root)
+        root = Path(root)
+        if root.is_file():  # a single .safetensors file
+            self.root, self.map = root.parent, {}
+            with safe_open(str(root), 'pt') as h:
+                for k in h.keys():
+                    self.map[k] = root.name
+            self._open, self._safe_open = {}, safe_open
+            return
+        self.root = root
         index = next(iter(sorted(self.root.glob('*.safetensors.index.json'))), None)
         if index is not None:
             self.map = json.loads(index.read_text())['weight_map']

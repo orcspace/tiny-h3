@@ -13,10 +13,28 @@ pytest.importorskip('diffusers')
 pytest.importorskip('av')
 
 
+def _tokenizer_and_processor(official):
+    """A word-level tokenizer that knows Qwen3-VL's vision tokens, and a real Qwen3-VL processor around it."""
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast, Qwen3VLProcessor
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from transformers.models.qwen3_vl.video_processing_qwen3_vl import Qwen3VLVideoProcessor
+    special = {'<|vision_start|>': 151652, '<|vision_end|>': 151653, '<|image_pad|>': 151655, '<|video_pad|>': 151656}
+    vocab = {f'w{i}': i for i in range(1000)} | {'[UNK]': 1000} | special
+    tok = Tokenizer(models.WordLevel(vocab, unk_token='[UNK]'))
+    tok.pre_tokenizer = pre_tokenizers.Whitespace()
+    fast = PreTrainedTokenizerFast(tokenizer_object=tok, unk_token='[UNK]',
+                                   additional_special_tokens=list(special))
+    fast.save_pretrained(official / 'tokenizer')
+    proc = Qwen3VLProcessor(image_processor=Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2),
+                            tokenizer=fast, video_processor=Qwen3VLVideoProcessor(patch_size=16, temporal_patch_size=2,
+                                                                                  merge_size=2))
+    proc.save_pretrained(official / 'processor')
+
+
 @pytest.fixture(scope='module')
 def tiny_store(tmp_path_factory):
     from safetensors.torch import save_file
-    from tokenizers import Tokenizer, models, pre_tokenizers
     from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
     from diffusers import AutoencoderKLMiniMaxH3Audio
     from tests.fixtures.modeling_minimax_h3_pruned import MiniMaxH3PrunedTransformer3DModel
@@ -31,7 +49,7 @@ def tiny_store(tmp_path_factory):
 
     te = Qwen3VLForConditionalGeneration(Qwen3VLConfig(
         text_config=dict(hidden_size=256, intermediate_size=512, num_hidden_layers=3, num_attention_heads=4,
-                         num_key_value_heads=2, head_dim=64, vocab_size=1000, rope_theta=5000000.0,
+                         num_key_value_heads=2, head_dim=64, vocab_size=152000, rope_theta=5000000.0,
                          rope_scaling={'rope_type': 'default', 'mrope_section': [12, 10, 10],
                                        'mrope_interleaved': True}),
         vision_config=dict(depth=1, hidden_size=64, intermediate_size=128, num_heads=2, out_hidden_size=256,
@@ -62,13 +80,29 @@ def tiny_store(tmp_path_factory):
 
     official = root / 'official'
     AutoencoderKLMiniMaxH3Audio(encoder_dim=8, encoder_rates=(2, 4, 4, 5, 5), latent_dim=64, num_attention_heads=2,
-                                decoder_dim=256).save_pretrained(official / 'audio_vae')
-    tok = Tokenizer(models.WordLevel({f'w{i}': i for i in range(1000)} | {'[UNK]': 999}, unk_token='[UNK]'))
-    tok.pre_tokenizer = pre_tokenizers.Whitespace()
-    (official / 'tokenizer').mkdir(parents=True)
-    tok.save(str(official / 'tokenizer' / 'tokenizer.json'))
+                                decoder_dim=256, latents_mean=[0.1] * 32,
+                                latents_std=[1.2] * 32).save_pretrained(official / 'audio_vae')
+    _tokenizer_and_processor(official)
 
-    out = convert(root / 'base', root / 'adapter', official, root / 'store', policy='mixed', device='cpu')
+    # the Ref2VA transformer (another random pruned H3) and a lightx2v-style LoRA (PEFT keys, alpha in metadata)
+    torch.manual_seed(1)
+    ref = MiniMaxH3PrunedTransformer3DModel(**TINY).eval()
+    _randomize(ref, seed=5)
+    ref.save_pretrained(root / 'base' / 'transformer_ref', safe_serialization=True)
+    lora = {'token_refiner.refiner_blocks.0.attn.to_q.lora_A.default.weight': r(8, D),
+            'token_refiner.refiner_blocks.0.attn.to_q.lora_B.default.weight': r(D, 8),
+            'transformer_blocks.2.ff.net.2.lora_A.default.weight': r(8, 1024),
+            'transformer_blocks.2.ff.net.2.lora_B.default.weight': r(D, 8)}
+    save_file(lora, str(root / 'ref_lora.safetensors'), metadata={'alpha': '4', 'format': 'pt'})
+
+    from diffusers import AutoencoderKLMiniMaxH3
+    AutoencoderKLMiniMaxH3(block_out_channels=(8, 8, 8, 8, 16, 16), norm_num_groups=4, decoder_num_layers=1,
+                           decoder_num_attention_heads=2, decoder_attention_head_dim=32, latents_mean=[0.0] * 24,
+                           latents_std=[1.0] * 24).save_pretrained(root / 'vae')
+
+    out = convert(root / 'base', root / 'adapter', official, root / 'store', policy='mixed', device='cpu',
+                  vae_dir=root / 'vae', vae_decoder=True, ref_dit=root / 'base' / 'transformer_ref',
+                  ref_adapter=root / 'ref_lora.safetensors')
     manifest = json.loads((out / 'manifest.json').read_text())
     manifest['dwd']['config'].update(num_heads=2, head_dim=64)  # the reduced Sol width of this fixture
     (out / 'manifest.json').write_text(json.dumps(manifest))
@@ -132,3 +166,49 @@ def test_modes(tiny_store, tmp_path, monkeypatch, mode):
         assert den['render'] == [192, 128] and dec['upscale'] is None
     with av.open(str(tmp_path / f'{mode}.mp4')) as c:
         assert (c.streams.video[0].width, c.streams.video[0].height) == (192, 128)
+
+
+def _image(path, w=96, h=64, seed=0):
+    import numpy as np
+    from PIL import Image
+    a = (np.random.RandomState(seed).rand(h, w, 3) * 255).astype('uint8')
+    Image.fromarray(a).save(path)
+    return str(path)
+
+
+@pytest.mark.parametrize('task,mode', [('i2v', 'fast'), ('flf2v', 'balance'), ('last2v', 'fast-high')])
+def test_keyframe_tasks(tiny_store, tmp_path, monkeypatch, task, mode):
+    monkeypatch.setenv('TINYH3_HOME', str(tmp_path / 'home'))
+    from tinyh3.runtime.pipeline import GenRequest, generate
+    first = _image(tmp_path / 'a.png') if task in ('i2v', 'flf2v') else None
+    last = _image(tmp_path / 'b.png', seed=1) if task in ('last2v', 'flf2v') else None
+    report = generate(GenRequest(prompt='w5 w6', seconds=5, height=128, width=192, sampler=mode, seed=3, task=task,
+                                 first=first, last=last, model=str(tiny_store),
+                                 output=str(tmp_path / f'{task}.mp4')), subprocess=False)
+    den = report['stages']['denoise']
+    anchors = {'i2v': 1, 'last2v': 1, 'flf2v': 2}[task]
+    rows_per_frame = (den['render'][1] // 32) * (den['render'][0] // 32)
+    assert den['conditioning_rows'] == [anchors * rows_per_frame, 0]
+    assert report['stages']['text']['anchors'] == {'i2v': ['first'], 'last2v': ['last'], 'flf2v': ['first', 'last']}[task]
+    assert os.path.getsize(tmp_path / f'{task}.mp4') > 1000
+
+
+def test_reference_task(tiny_store, tmp_path, monkeypatch):
+    monkeypatch.setenv('TINYH3_HOME', str(tmp_path / 'home'))
+    from tinyh3.runtime.media import write_mp4
+    from tinyh3.runtime.pipeline import GenRequest, generate
+    clip = tmp_path / 'clip.mp4'
+    frames = (torch.rand(30, 64, 96, 3) * 255).to(torch.uint8)
+    write_mp4(clip, frames, torch.rand(2, 40000) * 0.2 - 0.1, 24, 32000)
+    refs = [{'kind': 'image', 'path': _image(tmp_path / 'r.png', 80, 120)}, {'kind': 'video', 'path': str(clip)}]
+    report = generate(GenRequest(prompt='w9 w8', seconds=5, height=64, width=96, sampler='fast', seed=4, task='ref2v',
+                                 references=refs, model=str(tiny_store), output=str(tmp_path / 'ref.mp4')),
+                      subprocess=False)
+    den = report['stages']['denoise']
+    assert den['decoder'] == 'vae' and len(den['step_seconds']) == 4
+    n_video, n_audio = den['conditioning_rows']
+    assert n_video > 0 and n_audio > 0  # image + video reference rows, the clip's soundtrack
+    import av
+    with av.open(str(tmp_path / 'ref.mp4')) as c:
+        assert (c.streams.video[0].width, c.streams.video[0].height) == (96, 64)
+        assert c.streams.video[0].frames == 124 or c.streams.video[0].frames == 0

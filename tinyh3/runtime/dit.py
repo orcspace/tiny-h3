@@ -174,21 +174,25 @@ class Request:
         self.text_idx = layout.text_idx.to(device)
         cos, sin = rotary(layout.position_ids, cfg.rope_freq_dim, cfg.rope_theta)
         self.rope = (cos.to(device), sin.to(device))
-        self.ranges = layout.contiguous_ranges()
         self.seq = layout.seq
+        self.n_cond = layout.n_cond
+        self.n_cond_audio = layout.n_cond_audio
+        self.target_video_idx = self.video_idx[self.n_cond:]
 
 
 class DiT:
     def __init__(self, store, *, device='cuda', tiers=None, slots=2, head_group=8, ffn_chunk=4096,
-                 attention_backend='sdpa', passes=None, progress=None, spark=None):
+                 attention_backend='sdpa', passes=None, progress=None, spark=None, group='dit'):
+        """``group``: 'dit' (FL2VA transformer with the pi-H3 adapter) or 'dit_ref' (Ref2VA transformer)."""
         from .streamer import UnitStreamer
         self.store = store
+        self.group = group
         self.device = torch.device(device)
-        self.cfg = config_from_manifest(store.manifest['dit'].get('config'))
-        self.g = store.load_safetensors('dit/globals.safetensors', device=self.device)
-        n = len(store.units('dit'))
+        self.cfg = config_from_manifest(store.manifest[group].get('config'))
+        self.g = store.load_safetensors(f'{group}/globals.safetensors', device=self.device)
+        n = len(store.units(group))
         tiers = tiers or {i: 'vram' for i in range(n)}
-        self.streamer = UnitStreamer(store, 'dit', device=self.device, tiers=tiers, slots=slots, passes=passes,
+        self.streamer = UnitStreamer(store, group, device=self.device, tiers=tiers, slots=slots, passes=passes,
                                      progress=progress)
         self.num_layers = n
         self.head_group = head_group
@@ -205,25 +209,27 @@ class DiT:
 
     def forward(self, req: Request, video_rows: torch.Tensor, audio_rows: torch.Tensor, text_states: torch.Tensor,
                 t_unique: torch.Tensor, t_index: torch.Tensor, want_features: bool = False, on_block=None):
+        """``video_rows`` / ``audio_rows``: every video / audio row in ``video_idx`` / ``audio_idx`` order, i.e. the
+        conditioning (keyframe or reference) rows first, then the generated ones. Returns the velocity-negated
+        outputs for all of them and, with ``want_features``, the DWD features of the generated video rows."""
         g, cfg = self.g, self.cfg
         dev = self.device
-        r = req.ranges
-        x = torch.empty(req.seq, cfg.hidden_size, device=dev, dtype=BF16)
-        x[r['text']] = text_states.to(dev, BF16)
+        x = torch.zeros(req.seq, cfg.hidden_size, device=dev, dtype=BF16)
+        x.index_copy_(0, req.text_idx, text_states.to(dev, BF16))
         video = F.linear(video_rows.to(dev, torch.float32), g['proj_in.weight'].float(), g['proj_in.bias'].float())
-        n_cond = req.layout.n_cond
-        x[r['cond']] = video[:n_cond].to(BF16)
-        x[r['video']] = video[n_cond:].to(BF16)
+        x.index_copy_(0, req.video_idx, video.to(BF16))
         del video
-        x[r['audio']] = F.linear(audio_rows.to(dev, torch.float32), g['audio_proj_in.weight'].float(),
-                                 g['audio_proj_in.bias'].float()).to(BF16)
+        audio = F.linear(audio_rows.to(dev, torch.float32), g['audio_proj_in.weight'].float(),
+                         g['audio_proj_in.bias'].float())
+        x.index_copy_(0, req.audio_idx, audio.to(BF16))
+        del audio
 
         t_unique = t_unique.to(dev)
         t_index = t_index.to(dev)
         temb = time_coords(g['time_table'].float(), t_unique)
         rows = t_index * cfg.modality_num + req.tags
         self.streamer.prime()
-        units = self.store.units('dit')
+        units = self.store.units(self.group)
         if self.spark is not None:
             self.spark.begin_step(req, t_index)
         for i in range(self.num_layers):
@@ -251,9 +257,9 @@ class DiT:
             dmod = F.linear(F.silu(temb.float()), g['dwd_norm_out.linear.weight'].float(),
                             g['dwd_norm_out.linear.bias'].float())
             dscale, dshift = dmod.chunk(2, dim=-1)
-            vr = req.ranges['video']
-            xv = x[vr].float()
-            ti = t_index[vr]
+            vr = req.target_video_idx
+            xv = x.index_select(0, vr).float()
+            ti = t_index.index_select(0, vr)
             xv = F.layer_norm(xv, (cfg.hidden_size,), eps=cfg.final_norm_eps)
             features = (xv * (1 + dscale.index_select(0, ti)) + dshift.index_select(0, ti)).to(BF16)
             del xv

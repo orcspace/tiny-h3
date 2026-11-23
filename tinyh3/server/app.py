@@ -10,17 +10,25 @@ import uuid
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import __version__
-from ..config import RESOLUTIONS, ASPECT_RATIOS, SAMPLERS, SAMPLER_ALIASES, UPSCALE, MIN_SECONDS, home, models_dir, \
+from ..config import RESOLUTIONS, ASPECT_RATIOS, SAMPLERS, SAMPLER_ALIASES, REF_SAMPLER, UPSCALE, MIN_SECONDS, home, models_dir, \
     canvas_size, frames_for_seconds, Geometry, render_size, output_size
 from ..runtime.pipeline import GenRequest, generate
 
 UI = Path(__file__).resolve().parent.parent / 'ui'
 
+
+TASK_INFO = {
+    't2v': {'title': 'Текст', 'about': 'Видео со звуком по описанию.'},
+    'i2v': {'title': 'Изображение', 'about': 'Оживить кадр: он становится первым кадром видео.'},
+    'flf2v': {'title': 'Первый + последний', 'about': 'Видео, которое начинается и заканчивается вашими кадрами.'},
+    'ref2v': {'title': 'Референсы', 'about': 'До 9 изображений, 3 видео и 3 аудио как опора: персонажи, предметы, '
+                                              'стиль, голос. Свой трансформер, режим «Turbo 4».'},
+}
 
 MODE_INFO = {
     'quality': '4 шага, первый плотный. Лучшее качество, адаптер на 4 шага.',
@@ -28,6 +36,11 @@ MODE_INFO = {
     'fast': 'Черновой шаг на ½ разрешения, финальный на полном. ~1.6× к «Балансу».',
     'fast-high': 'Черновик + финальный шаг на ¾ разрешения + апскейл на Rust-ядре. ~2× к Fast, чуть мягче.',
 }
+
+
+class RefIn(BaseModel):
+    kind: str          # image | video | audio
+    id: str            # an id returned by POST /api/uploads
 
 
 class JobIn(BaseModel):
@@ -41,6 +54,10 @@ class JobIn(BaseModel):
     spark_mode: str | None = None
     upscale: str = 'none'
     model: str | None = None
+    task: str = 't2v'
+    first: str | None = None        # upload id
+    last: str | None = None         # upload id
+    references: list[RefIn] = []
 
 
 class EstimateIn(BaseModel):
@@ -50,6 +67,8 @@ class EstimateIn(BaseModel):
     sampler: str = 'fast'
     attention: str = 'auto'
     upscale: str = 'none'
+    task: str = 't2v'
+    references: list[RefIn] = []
 
 
 class Jobs:
@@ -119,14 +138,35 @@ class Hub:
             self.loop.call_soon_threadsafe(q.put_nowait, event)
 
 
+UPLOAD_KINDS = {'.png': 'image', '.jpg': 'image', '.jpeg': 'image', '.webp': 'image', '.bmp': 'image',
+                '.mp4': 'video', '.mov': 'video', '.mkv': 'video', '.webm': 'video',
+                '.wav': 'audio', '.mp3': 'audio', '.flac': 'audio', '.m4a': 'audio', '.ogg': 'audio'}
+MAX_UPLOAD = 1 << 30
+LIMITS = {'image': 9, 'video': 3, 'audio': 3, 'total': 12}  # MiniMax-H3 Ref2VA
+
+
+def reference_rows(kinds: list[str], tokens_per_frame: int) -> int:
+    """Rough number of extra sequence rows the references add (for the pre-flight estimate)."""
+    rows = 0
+    for k in kinds:
+        rows += {'image': tokens_per_frame, 'video': 8 * tokens_per_frame, 'audio': 160}.get(k, 0)
+    return rows
+
+
 def estimate_plan(r: GenRequest):
     """The planner's view of a resolved request on this machine (render size, mode, live budgets)."""
     from ..hardware import probe
     from ..planner import make_plan
     mode = r.preset
     rh, rw = render_size(r.height, r.width, mode.final_scale)
-    return make_plan(probe(), Geometry(rh, rw, frames_for_seconds(r.seconds)), steps=mode.steps,
-                     attention=r.attention, mode=mode)
+    geom = Geometry(rh, rw, frames_for_seconds(r.seconds))
+    extra = 0
+    if r.task in ('i2v', 'last2v', 'flf2v'):
+        extra = (1 + (r.task == 'flf2v')) * geom.tokens_per_frame
+    elif r.task == 'ref2v':
+        extra = reference_rows([x.get('kind') for x in r.references], geom.tokens_per_frame)
+    geom = Geometry(rh, rw, geom.num_frames, text_tokens=geom.text_tokens + extra)
+    return make_plan(probe(), geom, steps=mode.steps, attention=r.attention, mode=mode)
 
 
 def native_version():
@@ -175,6 +215,7 @@ def create_app(*, subprocess: bool = True) -> FastAPI:
 
         try:
             req = GenRequest(**{f.name: job['request'][f.name] for f in fields(GenRequest) if f.name in job['request']})
+            req.references = [{'kind': x['kind'], 'path': x['path']} for x in job['request'].get('references') or []]
             report = generate(req, on_event, subprocess=subprocess, cancel=cancel)
             jobs.update(job_id, status='done', report=report, output=report['output'])
             hub.publish({'job': job_id, 'type': 'status', 'status': 'done'})
@@ -205,6 +246,43 @@ def create_app(*, subprocess: bool = True) -> FastAPI:
     def index():
         return HTMLResponse((UI / 'index.html').read_text(encoding='utf-8'))
 
+    uploads_dir = home() / 'uploads'
+
+    def upload_path(upload_id: str) -> Path:
+        if not upload_id or '/' in upload_id or '\\' in upload_id or upload_id.startswith('.'):
+            raise HTTPException(400, 'некорректный id файла')
+        path = uploads_dir / upload_id
+        if not path.is_file():
+            raise HTTPException(404, f'файл {upload_id} не найден')
+        return path
+
+    @app.post('/api/uploads')
+    async def upload(request: Request, name: str = 'file'):
+        ext = Path(name).suffix.lower()
+        if ext not in UPLOAD_KINDS:
+            raise HTTPException(400, f'неподдерживаемый формат {ext or "без расширения"}')
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        upload_id = f'{uuid.uuid4().hex[:12]}{ext}'
+        size = 0
+        tmp = uploads_dir / (upload_id + '.part')
+        try:
+            with open(tmp, 'wb') as f:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_UPLOAD:
+                        raise HTTPException(413, 'файл больше 1 ГБ')
+                    f.write(chunk)
+            if size == 0:
+                raise HTTPException(400, 'пустой файл')
+            tmp.replace(uploads_dir / upload_id)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return {'id': upload_id, 'name': Path(name).name, 'kind': UPLOAD_KINDS[ext], 'size': size}
+
+    @app.get('/api/uploads/{upload_id}')
+    def upload_file(upload_id: str):
+        return FileResponse(upload_path(upload_id))
+
     @app.get('/api/info')
     def info():
         from ..hardware import probe
@@ -213,24 +291,36 @@ def create_app(*, subprocess: bool = True) -> FastAPI:
         hw = probe()
         prof = load()
         models = sorted(p.parent.name for p in models_dir().glob('*/manifest.json')) if models_dir().exists() else []
+        has_ref = False
+        for m in models:
+            try:
+                has_ref |= 'dit_ref' in json.loads((models_dir() / m / 'manifest.json').read_text())
+            except (OSError, ValueError):
+                pass
         return {'version': __version__, 'hardware': hw.as_dict(), 'attention': available(),
                 'gpu_profile': prof.summary if prof else None, 'advice': advice(prof, hw.os) if prof else [],
                 'models': models, 'resolutions': list(RESOLUTIONS), 'aspects': list(ASPECT_RATIOS),
                 'samplers': {k: {'title': v.title, 'steps': v.steps, 'about': MODE_INFO.get(k, '')}
                              for k, v in SAMPLERS.items()},
-                'upscale': list(UPSCALE), 'native': native_version(), 'min_seconds': 5.2, 'max_seconds': 14.4}
+                'upscale': list(UPSCALE), 'native': native_version(), 'min_seconds': 5.2, 'max_seconds': 14.4,
+                'tasks': TASK_INFO, 'ref_available': has_ref, 'ref_limits': LIMITS}
 
     @app.post('/api/estimate')
     def estimate(body: EstimateIn):
         from ..hardware import probe
         from ..planner import make_plan
         mode = SAMPLERS[SAMPLER_ALIASES.get(body.sampler, body.sampler)]
+        if body.task == 'ref2v':
+            mode = REF_SAMPLER
         h, w = canvas_size(body.aspect, RESOLUTIONS[body.resolution])
         rh, rw = render_size(h, w, mode.final_scale)
         oh, ow = output_size(h, w, body.upscale)
+        r = GenRequest(prompt='-', seconds=body.seconds, height=h, width=w, sampler=body.sampler,
+                       attention=body.attention, task=body.task,
+                       references=[{'kind': x.kind} for x in body.references])
+        plan = estimate_plan(r)
         geom = Geometry(rh, rw, frames_for_seconds(body.seconds))
-        plan = make_plan(probe(), geom, steps=mode.steps, attention=body.attention, mode=mode)
-        return {'width': ow, 'height': oh, 'render': [rw, rh], 'frames': geom.num_frames,
+        return {'width': ow, 'height': oh, 'render': [rw, rh], 'frames': geom.num_frames, 'steps': mode.steps,
                 'seconds': round(geom.seconds, 2),
                 'tokens': geom.sequence_length, 'fits': plan.fits, 'reason': plan.reason,
                 'summary': plan.summary(), 'attention': plan.attention, 'est': plan.est, 'notes': plan.notes,
@@ -244,7 +334,34 @@ def create_app(*, subprocess: bool = True) -> FastAPI:
             raise HTTPException(400, 'неизвестное разрешение')
         if SAMPLER_ALIASES.get(body.sampler, body.sampler) not in SAMPLERS or body.upscale not in UPSCALE:
             raise HTTPException(400, 'неизвестный режим или апскейл')
-        job = jobs.add(body.model_dump())
+        if body.task not in TASK_INFO:
+            raise HTTPException(400, 'неизвестная задача')
+        data = body.model_dump()
+        data['first'] = str(upload_path(body.first)) if body.first else None
+        data['last'] = str(upload_path(body.last)) if body.last else None
+        if body.task in ('i2v', 'flf2v') and not data['first']:
+            raise HTTPException(400, 'нужен первый кадр')
+        if body.task in ('last2v', 'flf2v') and not data['last']:
+            raise HTTPException(400, 'нужен последний кадр')
+        refs = []
+        if body.task == 'ref2v':
+            kinds = [x.kind for x in body.references]
+            if not kinds:
+                raise HTTPException(400, 'добавьте хотя бы один референс')
+            if set(kinds) == {'audio'}:
+                raise HTTPException(400, 'аудио нужно дополнить изображением или видео')
+            for k in ('image', 'video', 'audio'):
+                if kinds.count(k) > LIMITS[k]:
+                    raise HTTPException(400, f'не больше {LIMITS[k]} референсов типа {k}')
+            if len(kinds) > LIMITS['total']:
+                raise HTTPException(400, f'не больше {LIMITS["total"]} референсов')
+            for x in body.references:
+                path = upload_path(x.id)
+                if UPLOAD_KINDS.get(path.suffix.lower()) != x.kind:
+                    raise HTTPException(400, f'файл {x.id} не является {x.kind}')
+                refs.append({'kind': x.kind, 'path': str(path), 'id': x.id})
+        data['references'] = refs
+        job = jobs.add(data)
         with cv:
             queue.append(job['id'])
             cv.notify()

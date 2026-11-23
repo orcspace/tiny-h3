@@ -79,3 +79,48 @@ def test_text_tower_matches_transformers(tmp_path):
     want = hs[tcfg.num_layers_used][0].float()
     rel = ((got.float() - want).norm() / want.norm()).item()
     assert rel < 0.02, rel
+
+
+def test_text_tower_with_image_matches_transformers(tmp_path):
+    """Image block inside the presentation: vision tower, 3-axis M-RoPE and deepstack vs transformers."""
+    pytest.importorskip('transformers')
+    import numpy as np
+    from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+    from tinyh3.convert.convert import convert_text, text_config_from
+    from tinyh3.convert.sources import ShardedReader
+    from tinyh3.store import FORMAT, Store
+    from tinyh3.runtime.text_stage import encode_tokens
+    cfg = Qwen3VLConfig(
+        text_config=dict(hidden_size=256, intermediate_size=512, num_hidden_layers=4, num_attention_heads=4,
+                         num_key_value_heads=2, head_dim=64, vocab_size=152000, rope_theta=5000000.0,
+                         rope_scaling={'rope_type': 'default', 'mrope_section': [12, 10, 10], 'mrope_interleaved': True}),
+        vision_config=dict(depth=2, hidden_size=64, intermediate_size=128, num_heads=2, out_hidden_size=256,
+                           patch_size=16, spatial_merge_size=2, temporal_patch_size=2, deepstack_visual_indexes=[0, 1]))
+    torch.manual_seed(0)
+    model = Qwen3VLForConditionalGeneration(cfg).eval()
+    model.save_pretrained(tmp_path / 'te', safe_serialization=True)
+    tcfg = text_config_from(tmp_path / 'te')
+    out = tmp_path / 'store'
+    out.mkdir()
+    text = convert_text(ShardedReader(tmp_path / 'te'), out, tcfg, 'int8', 'cpu', lambda *a: None,
+                        config_dir=tmp_path / 'te')
+    (out / 'manifest.json').write_text(json.dumps({'format': FORMAT, 'text': text, 'dit': {}}))
+    assert (out / 'text' / 'visual.safetensors').exists()
+
+    proc = Qwen2VLImageProcessor(patch_size=16, temporal_patch_size=2, merge_size=2, min_pixels=64 * 64,
+                                 max_pixels=96 * 96)
+    img = (np.random.RandomState(0).rand(64, 96, 3) * 255).astype('uint8')
+    vis = proc(images=[img], return_tensors='pt')
+    n_img = int(vis['image_grid_thw'][0].prod()) // 4
+    ids = [5, 17, 99] + [cfg.vision_start_token_id] + [cfg.image_token_id] * n_img + [cfg.vision_end_token_id] + [3, 250, 7]
+    got = encode_tokens(Store(out), ids, 'cpu', vision_inputs={'pixel_values': vis['pixel_values'],
+                                                              'image_grid_thw': vis['image_grid_thw']})
+    with torch.no_grad():
+        t = torch.tensor([ids])
+        types = (t == cfg.image_token_id).long()
+        want = model.model(input_ids=t, attention_mask=torch.ones_like(t), mm_token_type_ids=types,
+                           pixel_values=vis['pixel_values'], image_grid_thw=vis['image_grid_thw'], use_cache=False,
+                           output_hidden_states=True).hidden_states[tcfg.num_layers_used][0].float()
+    rel = ((got.float() - want).norm() / want.norm()).item()
+    assert rel < 0.02, rel

@@ -103,14 +103,14 @@ def _block_linears(writer, reader, adapter, prefix, kind, device):
         writer.add(name, _get(reader, adapter, f'{prefix}.{key}').to(torch.bfloat16))
 
 
-def convert_dit(reader, adapter, out: Path, cfg: DiTConfig, policy: str, device, progress) -> dict:
-    units = _Units(out, 'dit')
+def convert_dit(reader, adapter, out: Path, cfg: DiTConfig, policy: str, device, progress, group='dit') -> dict:
+    units = _Units(out, group)
     kinds = block_kinds(policy, cfg.num_layers)
     basis = reader.get('adaln_basis') if 'adaln_basis' in reader else None
     mean = reader.get('adaln_mean') if 'adaln_mean' in reader else None
     for i in range(cfg.num_layers):
         if units.done(i):
-            progress('dit', i + 1, cfg.num_layers)
+            progress(group, i + 1, cfg.num_layers)
             continue
         prefix = f'transformer_blocks.{i}'
         writer = BlobWriter()
@@ -126,11 +126,11 @@ def convert_dit(reader, adapter, out: Path, cfg: DiTConfig, policy: str, device,
         writer.add('adaln_w', aw.to(torch.bfloat16))
         writer.add('adaln_b', ab.float())
         units.write(i, writer)
-        progress('dit', i + 1, cfg.num_layers)
+        progress(group, i + 1, cfg.num_layers)
     return {'config': asdict(cfg), 'kinds': kinds, 'units': units.collect(cfg.num_layers)}
 
 
-def convert_dit_globals(reader, adapter, out: Path, cfg: DiTConfig, has_dwd: bool) -> None:
+def convert_dit_globals(reader, adapter, out: Path, cfg: DiTConfig, has_dwd: bool, group='dit') -> None:
     from safetensors.torch import save_file
     g = {}
     for key in ('proj_in.weight', 'proj_in.bias', 'audio_proj_in.weight', 'audio_proj_in.bias',
@@ -155,12 +155,12 @@ def convert_dit_globals(reader, adapter, out: Path, cfg: DiTConfig, has_dwd: boo
         g['dwd_norm_out.linear.weight'] = fused(adapter.override('dwd_norm_out.linear.weight'),
                                                 'dwd_norm_out.linear', adapter)
         g['dwd_norm_out.linear.bias'] = adapter.override('dwd_norm_out.linear.bias').float()
-    (out / 'dit').mkdir(parents=True, exist_ok=True)
-    save_file({k: v.contiguous() for k, v in g.items()}, str(out / 'dit' / 'globals.safetensors'))
+    (out / group).mkdir(parents=True, exist_ok=True)
+    save_file({k: v.contiguous() for k, v in g.items()}, str(out / group / 'globals.safetensors'))
 
 
-def convert_refiner(reader, adapter, out: Path, cfg: DiTConfig, device) -> dict:
-    units = _Units(out, 'refiner')
+def convert_refiner(reader, adapter, out: Path, cfg: DiTConfig, device, group='refiner') -> dict:
+    units = _Units(out, group)
     count = 1 + cfg.num_refiner_layers
     if not units.done(0):
         writer = BlobWriter()
@@ -198,7 +198,25 @@ def convert_dwd(adapter, out: Path) -> dict | None:
     return {'file': 'dwd/head.safetensors', 'num_layers': num_layers}
 
 
-def convert_text(reader, out: Path, cfg: TextEncoderConfig, kind: str, device, progress, rotate: bool = False) -> dict:
+def write_visual(reader, out: Path, config_dir: Path | None) -> None:
+    """The Qwen3-VL vision tower (bf16, ~0.8 GB) and the conditioner's config, for image / video prompts."""
+    from safetensors.torch import save_file
+    target = out / 'text' / 'visual.safetensors'
+    names = list(getattr(getattr(reader, 'f', None), 'names', []) or []) + list(reader.keys())
+    vis = {}
+    for name in names:
+        for prefix in ('model.visual.', 'visual.'):
+            if name.startswith(prefix) and not name.endswith(('.weight_scale', '.comfy_quant')):
+                vis['visual.' + name[len(prefix):]] = name
+    if vis and not target.exists():
+        getter = reader.f.get if hasattr(reader, 'f') and not all(k in reader for k in vis.values()) else reader.get
+        save_file({k: getter(v).to(torch.bfloat16).contiguous() for k, v in vis.items()}, str(target))
+    if config_dir is not None and (Path(config_dir) / 'config.json').exists():
+        shutil.copy(Path(config_dir) / 'config.json', out / 'text' / 'config.json')
+
+
+def convert_text(reader, out: Path, cfg: TextEncoderConfig, kind: str, device, progress, rotate: bool = False,
+                 config_dir: Path | None = None) -> dict:
     """``rotate``: keep the ConvRot basis (lossless when the source already is INT8 ConvRot); the runtime then
     rotates activations before the weight-only matmul."""
     units = _Units(out, 'text')
@@ -231,8 +249,43 @@ def convert_text(reader, out: Path, cfg: TextEncoderConfig, kind: str, device, p
             writer.add(name, reader.get(f'{p}.{key}.weight').to(torch.bfloat16))
         units.write(i, writer)
         progress('text', i + 1, cfg.num_layers_used)
+    write_visual(reader, out, config_dir)
     return {'config': asdict(cfg), 'kind': kind, 'units': units.collect(cfg.num_layers_used),
             'embed': {'file': 'text/embed.bin', 'dim': cfg.hidden_size, 'dtype': 'bfloat16'}}
+
+
+def write_vae(src: Path, out: Path, decoder: bool) -> dict:
+    """Encoder (fp32) and optionally decoder (fp16) of a local diffusers video-VAE directory."""
+    from safetensors.torch import save_file
+    dst = out / 'vae'
+    dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src / 'config.json', dst / 'config.json')
+    reader = ShardedReader(src)
+    parts = {'encoder': (('encoder.', 'quant_conv.'), torch.float32)}
+    if decoder:
+        parts['decoder'] = (('decoder.', 'post_quant_conv.'), torch.float16)
+    for name, (prefixes, dtype) in parts.items():
+        target = dst / f'{name}.safetensors'
+        if not target.exists():
+            save_file({k: reader.get(k).to(dtype).contiguous() for k in reader.keys() if k.startswith(prefixes)},
+                      str(target))
+    return {'encoder': 'vae/encoder.safetensors', 'decoder': 'vae/decoder.safetensors' if decoder else None}
+
+
+def _convert_ref(manifest: dict, out: Path, ref_dit: Path, ref_adapter: Path | None, policy, device, progress):
+    ref_dit = Path(ref_dit)
+    if ref_dit.is_file():
+        from .comfy import ComfyDiTView
+        cfg = DiTConfig()
+        reader = ComfyDiTView(ref_dit, cfg.num_layers, cfg.num_refiner_layers, cfg.inner_dim)
+    else:
+        cfg = dit_config_from(ref_dit)
+        reader = ShardedReader(ref_dit)
+    adapter = Adapter(ShardedReader(Path(ref_adapter))) if ref_adapter is not None else None
+    convert_dit_globals(reader, adapter, out, cfg, False, group='dit_ref')
+    manifest['dit_ref'] = convert_dit(reader, adapter, out, cfg, policy, device, progress, group='dit_ref')
+    manifest['refiner_ref'] = convert_refiner(reader, adapter, out, cfg, device, group='refiner_ref')
+    manifest.setdefault('recipe', {})['ref_adapter'] = Path(ref_adapter).name if ref_adapter else None
 
 
 def dit_config_from(path: Path) -> DiTConfig:
@@ -249,21 +302,40 @@ def text_config_from(path: Path) -> TextEncoderConfig:
         hidden_size=raw.get('hidden_size', 5120), num_heads=raw.get('num_attention_heads', 64),
         num_kv_heads=raw.get('num_key_value_heads', 8), head_dim=raw.get('head_dim', 128),
         intermediate_size=raw.get('intermediate_size', 25600), vocab_size=raw.get('vocab_size', 151936),
-        rms_norm_eps=raw.get('rms_norm_eps', 1e-6), rope_theta=raw.get('rope_theta', 5e6),
-        num_layers_used=min(50, raw.get('num_hidden_layers', 51) - 1))
+        rms_norm_eps=raw.get('rms_norm_eps', 1e-6),
+        rope_theta=raw.get('rope_theta', (raw.get('rope_parameters') or {}).get('rope_theta', 5e6)),
+        num_layers_used=min(50, raw.get('num_hidden_layers', 51) - 1),
+        mrope_section=tuple(((raw.get('rope_scaling') or raw.get('rope_parameters') or {}).get('mrope_section'))
+                            or (24, 20, 20)))
 
 
 def convert(base: Path | None, adapter_dir: Path | None, official: Path | None, out: Path, *, policy='int8',
             text_kind='int8', sampler='balanced', device=None, with_text=True, progress=None,
-            comfy_dit: Path | None = None, comfy_text: Path | None = None) -> Path:
+            comfy_dit: Path | None = None, comfy_text: Path | None = None, vae_dir: Path | None = None,
+            vae_decoder: bool = False, ref_dit: Path | None = None, ref_adapter: Path | None = None,
+            only_ref: bool = False) -> Path:
     """``base``: a diffusers MiniMax-H3-Pruned directory; or pass ``comfy_dit`` / ``comfy_text`` (Comfy-Org INT8
-    ConvRot single files) instead."""
+    ConvRot single files) instead.
+
+    ``vae_dir``: a diffusers video-VAE directory; its encoder (keyframe / reference images) and, with
+    ``vae_decoder``, its decoder (Ref2VA, which has no DWD head) are stored. ``ref_dit``: the Ref2VA transformer
+    (a Comfy-Org single file or a diffusers ``transformer_ref`` directory) with ``ref_adapter`` (e.g. lightx2v's
+    Ref2VA turbo LoRA) fused; stored as the ``dit_ref`` / ``refiner_ref`` groups of the same model. With
+    ``only_ref`` an existing store gains the Ref2VA groups without touching the rest."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    previous = json.loads((out / 'manifest.json').read_text()) if (out / 'manifest.json').exists() else {}
     device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
     progress = progress or (lambda stage, i, n: log.info('%s %d/%d', stage, i, n))
     t0 = time.time()
 
+    if only_ref:
+        manifest = previous
+        _convert_ref(manifest, out, ref_dit, ref_adapter, policy, device, progress)
+        if vae_dir is not None:
+            manifest['vae'] = write_vae(Path(vae_dir), out, decoder=True)
+        (out / 'manifest.json').write_text(json.dumps(manifest, indent=1))
+        return out
     if comfy_dit is not None:
         from .comfy import ComfyDiTView
         cfg = DiTConfig()
@@ -291,15 +363,26 @@ def convert(base: Path | None, adapter_dir: Path | None, official: Path | None, 
         manifest['dwd'] = {**dwd, 'config': asdict(sol)}
     if with_text and comfy_text is not None:
         from .comfy import ComfyTextView
+        te_cfg_dir = Path(official) / 'text_encoder' if official is not None else None
         manifest['text'] = convert_text(ComfyTextView(Path(comfy_text)), out, TextEncoderConfig(), 'int8', device,
-                                        progress, rotate=True)
+                                        progress, rotate=True, config_dir=te_cfg_dir)
     elif with_text and base is not None and (Path(base) / 'text_encoder').exists():
         tcfg = text_config_from(Path(base) / 'text_encoder')
         manifest['text'] = convert_text(ShardedReader(Path(base) / 'text_encoder'), out, tcfg, text_kind, device,
-                                        progress)
+                                        progress, config_dir=Path(base) / 'text_encoder')
+    if vae_dir is not None:
+        manifest['vae'] = write_vae(Path(vae_dir), out, decoder=vae_decoder)
+    elif previous.get('vae'):
+        manifest['vae'] = previous['vae']
+    if ref_dit is not None:
+        _convert_ref(manifest, out, ref_dit, ref_adapter, policy, device, progress)
+    else:
+        for key in ('dit_ref', 'refiner_ref'):
+            if key in previous:
+                manifest[key] = previous[key]
     if official is not None:
         official = Path(official)
-        for sub in ('audio_vae', 'tokenizer'):
+        for sub in ('audio_vae', 'tokenizer', 'processor'):
             src = official / sub
             if src.exists() and not (out / sub).exists():
                 shutil.copytree(src, out / sub)

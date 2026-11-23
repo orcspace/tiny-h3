@@ -101,12 +101,14 @@ def rotary(position_ids: torch.Tensor, rope_freq_dim=DIT.rope_freq_dim, theta=DI
 
 
 def row_timesteps(video_idx, audio_idx, n_cond_video: int, n_text: int, video_t: float, audio_t: float,
-                  cond_t: float):
-    """(distinct timesteps sorted, per-row index into them) — diffusers ``build_row_timesteps``."""
+                  cond_t: float, n_cond_audio: int = 0, cond_audio_t: float = 1.0):
+    """(distinct timesteps sorted, per-row index into them) — diffusers ``build_row_timesteps``. Reference audio rows
+    (Ref2VA soundtracks) are clean: t = 1."""
     seq = int(video_idx.numel() + audio_idx.numel() + n_text)
     rt = torch.full((seq,), video_t, dtype=torch.float32)
     rt[video_idx[:n_cond_video]] = cond_t
-    rt[audio_idx] = audio_t
+    rt[audio_idx[n_cond_audio:]] = audio_t
+    rt[audio_idx[:n_cond_audio]] = cond_audio_t
     return torch.unique(rt, sorted=True, return_inverse=True)
 
 
@@ -119,6 +121,7 @@ class Layout:
     audio_idx: torch.Tensor
     text_idx: torch.Tensor
     n_cond: int
+    n_cond_audio: int = 0
 
     @property
     def seq(self) -> int:
@@ -130,6 +133,13 @@ class Layout:
             text_token_tags, geometry.latent_t, geometry.latent_h, geometry.latent_w,
             audio_latents(geometry.num_frames), keyframe_anchors=keyframe_anchors)
         return cls(geometry, pos, tags, v, a, t, n_cond)
+
+    @classmethod
+    def from_packed(cls, geometry: Geometry, packed: tuple):
+        """Wrap diffusers' ``build_*_packed_sequence`` output (position_ids, token_tags, video_indices, audio_indices,
+        text_indices, n_cond_video, n_cond_audio), e.g. the Ref2VA layout."""
+        pos, tags, v, a, t, n_cond, n_cond_audio = packed
+        return cls(geometry, pos, tags, v, a, t, int(n_cond), int(n_cond_audio))
 
     def contiguous_ranges(self):
         """The layout puts text, conditions, audio, then video rows in one run each — return them as slices."""
