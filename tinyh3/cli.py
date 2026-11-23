@@ -97,19 +97,74 @@ def cmd_plan(a):
         print('  •', n)
 
 
+def _resolve_low_disk(a):
+    """--low-disk means: int4 DiT and text tower, read from the Hub without storing sources, delete leftovers."""
+    if getattr(a, 'low_disk', False):
+        a.policy = a.policy or 'int4'
+        a.text = a.text or 'int4'
+        a.source = 'comfy'
+        a.delete_sources = True
+    a.policy = a.policy or 'int8'
+    a.text = a.text or 'int8'
+
+
+def _preflight(a, out: Path, text_dir: Path | None, ref: bool):
+    from . import diskplan
+    est = diskplan.estimate(a.policy, a.text, images=not a.no_images, ref=ref)
+    print('Что будет на диске:')
+    print(diskplan.format_table(est, text_dir))
+    problems = diskplan.check_space(models_dir(), text_dir, est)
+    if not getattr(a, 'low_disk', False) and a.source == 'comfy':
+        need = 52 << 30
+        if diskplan.free_bytes(Path(a.sources)) < need:
+            problems.append(f'без --low-disk сначала скачиваются исходники (~52 ГБ) в {a.sources}: свободно '
+                            f'{diskplan.free_bytes(Path(a.sources)) / 2**30:.1f} ГБ. Используйте --low-disk')
+    if problems:
+        print('\nНе хватает места:')
+        for pr in problems:
+            print('  •', pr)
+        raise SystemExit(1)
+    print()
+
+
 def cmd_setup(a):
     from .convert.convert import convert
+    from . import diskplan
+    _resolve_low_disk(a)
     src = Path(a.sources)
     a.sampler = 'quality' if a.steps == 4 else 'balance'
     preset = SAMPLERS[a.sampler]
     out = models_dir() / (a.name or f'h3-pi{preset.adapter_steps}-dwd-{a.policy}')
-    if a.source == 'comfy':
+    text_dir = Path(a.text_dir).expanduser() if a.text_dir else None
+    _preflight(a, out, text_dir, a.ref)
+    if a.dry_run:
+        print('--dry-run: ничего не скачано и не записано.')
+        return
+    out.mkdir(parents=True, exist_ok=True)
+    if text_dir:
+        diskplan.link_dir(out / 'text', text_dir)
+        print(f'Текстовая башня: {text_dir} (ссылка {out / "text"})')
+    if a.source == 'comfy' and a.low_disk:
+        from .convert.comfy import COMFY_REPO, COMFY_DIT, COMFY_TEXT
+        from .convert.remote import hub_url
+        from .config import SOURCES
+        from huggingface_hub import snapshot_download
+        print('Режим low-disk: веса читаются с Hub по частям и сразу квантуются, исходники на диск не сохраняются.')
+        official = snapshot_download(SOURCES['official_repo'], local_dir=src / 'official',
+                                     allow_patterns=['audio_vae/*', 'tokenizer/*', 'processor/*'])
+        adapter = hub_url(SOURCES['adapter_repo'], f'{preset.adapter}/diffusion_pytorch_model.safetensors')
+        print(f'Конвертация в {out}…')
+        convert(None, adapter, Path(official), out, policy=a.policy, text_kind=a.text, sampler=a.sampler,
+                comfy_dit=hub_url(COMFY_REPO, COMFY_DIT), comfy_text=hub_url(COMFY_REPO, COMFY_TEXT),
+                progress=_convert_progress())
+    elif a.source == 'comfy':
         from .convert.comfy import download
         print(f'Скачивание в {src}: INT8 ConvRot от Comfy-Org (~52 ГБ; можно удалить после конвертации)…')
         paths = download(src, sampler=a.sampler)
         print(f'Конвертация в {out}…')
-        convert(None, Path(paths['adapter']), Path(paths['official']), out, policy=a.policy, sampler=a.sampler,
-                comfy_dit=Path(paths['dit']), comfy_text=Path(paths['text']), progress=_convert_progress())
+        convert(None, Path(paths['adapter']), Path(paths['official']), out, policy=a.policy, text_kind=a.text,
+                sampler=a.sampler, comfy_dit=Path(paths['dit']), comfy_text=Path(paths['text']),
+                progress=_convert_progress())
     else:
         from .convert.sources import download
         print(f'Скачивание в {src}: bf16 (~95 ГБ; можно удалить после конвертации)…')
@@ -117,7 +172,8 @@ def cmd_setup(a):
         print(f'Конвертация в {out}…')
         convert(Path(paths['base']), Path(paths['adapter']) / preset.adapter, Path(paths['official']), out,
                 policy=a.policy, text_kind=a.text, sampler=a.sampler, progress=_convert_progress())
-    _ensure_vae(out, decoder=False)
+    if not a.no_images:
+        _ensure_vae(out, decoder=False)
     if a.ref:
         _setup_ref(a, src, out)
     if a.delete_sources:
@@ -141,14 +197,25 @@ def _ensure_vae(out: Path, decoder: bool):
 
 
 def _setup_ref(a, src: Path, out: Path):
-    from .convert.comfy import download_ref
     from .convert.convert import convert
-    print(f'\nRef2VA: Comfy-Org INT8 (~21 ГБ) + LoRA Turbo 4 (~1.4 ГБ) в {src}…')
-    paths = download_ref(src)
+    low = getattr(a, 'low_disk', False)
+    policy = getattr(a, 'policy', None) or ('int4' if low else 'int8')
+    if low:
+        from .convert.comfy import COMFY_REPO
+        from .convert.remote import hub_url
+        from .config import REF_ADAPTER_FILE, REF_ADAPTER_REPO
+        dit = hub_url(COMFY_REPO, 'diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors')
+        adapter = hub_url(REF_ADAPTER_REPO, REF_ADAPTER_FILE)
+        print('\nRef2VA (low-disk): веса читаются с Hub по частям, на диск не сохраняются.')
+    else:
+        from .convert.comfy import download_ref
+        print(f'\nRef2VA: Comfy-Org INT8 (~21 ГБ) + LoRA Turbo 4 (~1.4 ГБ) в {src}…')
+        paths = download_ref(src)
+        dit, adapter = Path(paths['dit']), Path(paths['adapter'])
     _ensure_vae(out, decoder=True)
     print('Конвертация Ref2VA…')
-    convert(None, None, None, out, policy=a.policy, only_ref=True, ref_dit=Path(paths['dit']),
-            ref_adapter=Path(paths['adapter']), progress=_convert_progress())
+    convert(None, None, None, out, policy=policy, only_ref=True, ref_dit=dit, ref_adapter=adapter,
+            progress=_convert_progress())
 
 
 def cmd_setup_ref(a):
@@ -257,20 +324,26 @@ def main(argv=None):
     s = sub.add_parser('setup', help='скачать веса и сконвертировать модель')
     s.add_argument('--sources', default=str(Path.home() / '.tinyh3' / 'sources'))
     s.add_argument('--name')
-    s.add_argument('--policy', default='int8', choices=['int8', 'mixed', 'int4'])
+    s.add_argument('--policy', default=None, choices=['int8', 'mixed', 'int4'], help='вес DiT: int8 (18 ГБ), mixed (10.4), int4 (9.3)')
     s.add_argument('--steps', type=int, default=2, choices=[2, 4],
                    help='адаптер pi-H3: 2 шага (Баланс, Fast, Fast-high) или 4 шага (Качество)')
-    s.add_argument('--text', default='int8', choices=['int8', 'int4'], help='только для --source hf')
+    s.add_argument('--text', default=None, choices=['int8', 'int4'], help='текстовая башня: int8 (24 ГБ), int4 (13 ГБ)')
     s.add_argument('--source', default='comfy', choices=['comfy', 'hf'],
                    help='comfy: готовые INT8 ConvRot от Comfy-Org (~52 ГБ); hf: bf16 оригиналы (~95 ГБ)')
     s.add_argument('--delete-sources', action='store_true', help='удалить скачанные исходники после конвертации')
     s.add_argument('--ref', action='store_true', help='сразу добавить Ref2VA (референсы → видео, +~27 ГБ)')
+    s.add_argument('--low-disk', action='store_true',
+                   help='мало места: int4, веса читаются с Hub по частям без промежуточных файлов (~27 ГБ итого)')
+    s.add_argument('--text-dir', help='положить текстовую башню на другой диск (на основном остаётся ~13 ГБ)')
+    s.add_argument('--dry-run', action='store_true', help='показать, что и где займёт место, и выйти')
+    s.add_argument('--no-images', action='store_true', help='без картинок в промпте: -1.5 ГБ (нет задач с кадрами и референсами)')
     s.set_defaults(fn=cmd_setup)
 
     sr = sub.add_parser('setup-ref', help='добавить Ref2VA (референсы → видео) к готовой модели')
     sr.add_argument('--sources', default=str(Path.home() / '.tinyh3' / 'sources'))
     sr.add_argument('--model', help='папка модели (по умолчанию первая)')
     sr.add_argument('--policy', default='int8', choices=['int8', 'mixed', 'int4'])
+    sr.add_argument('--low-disk', action='store_true', help='читать веса с Hub без промежуточных файлов')
     sr.set_defaults(fn=cmd_setup_ref)
 
     c = sub.add_parser('convert', help='сконвертировать локальные HF-веса')

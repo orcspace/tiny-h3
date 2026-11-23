@@ -39,11 +39,21 @@ def _swap_halves(t):
     return torch.cat([b, a])
 
 
+def _open(source):
+    """A local path, an http(s) URL (read with range requests, nothing stored) or an already open file object."""
+    if hasattr(source, 'names') and hasattr(source, 'get'):
+        return source
+    if isinstance(source, str) and source.startswith(('http://', 'https://')):
+        from .remote import RemoteFile
+        return RemoteFile(source)
+    return _File(Path(source))
+
+
 class _QuantView:
     """Shared machinery: dequantize + unrotate ConvRot int8 layers on demand (one-entry cache for fused qkv)."""
 
-    def __init__(self, path: Path):
-        self.f = _File(path)
+    def __init__(self, path):
+        self.f = _open(path)
         self.map: dict = {}
         self._cache = (None, None)
 

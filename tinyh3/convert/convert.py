@@ -33,6 +33,23 @@ from .sources import ShardedReader
 log = logging.getLogger(__name__)
 
 
+def _src(x):
+    """Keep URLs and open file objects as they are; everything else is a filesystem path."""
+    return x if isinstance(x, str) or hasattr(x, 'names') else Path(x)
+
+
+def _adapter_reader(x):
+    if isinstance(x, str) and x.startswith(('http://', 'https://')):
+        from .remote import RemoteFile
+        return RemoteFile(x)
+    return ShardedReader(Path(x))
+
+
+def _adapter_name(x) -> str:
+    x = str(x)
+    return x.rstrip('/').rsplit('/', 2)[-2] if x.startswith(('http://', 'https://')) else Path(x).name
+
+
 def rotate_rows(w: torch.Tensor, chunk: int = 4096) -> torch.Tensor:
     out = torch.empty_like(w, dtype=torch.float32)
     for r0 in range(0, w.shape[0], chunk):
@@ -273,19 +290,19 @@ def write_vae(src: Path, out: Path, decoder: bool) -> dict:
 
 
 def _convert_ref(manifest: dict, out: Path, ref_dit: Path, ref_adapter: Path | None, policy, device, progress):
-    ref_dit = Path(ref_dit)
-    if ref_dit.is_file():
+    ref_dit = _src(ref_dit)
+    if isinstance(ref_dit, str) or ref_dit.is_file():
         from .comfy import ComfyDiTView
         cfg = DiTConfig()
         reader = ComfyDiTView(ref_dit, cfg.num_layers, cfg.num_refiner_layers, cfg.inner_dim)
     else:
         cfg = dit_config_from(ref_dit)
         reader = ShardedReader(ref_dit)
-    adapter = Adapter(ShardedReader(Path(ref_adapter))) if ref_adapter is not None else None
+    adapter = Adapter(_adapter_reader(ref_adapter)) if ref_adapter is not None else None
     convert_dit_globals(reader, adapter, out, cfg, False, group='dit_ref')
     manifest['dit_ref'] = convert_dit(reader, adapter, out, cfg, policy, device, progress, group='dit_ref')
     manifest['refiner_ref'] = convert_refiner(reader, adapter, out, cfg, device, group='refiner_ref')
-    manifest.setdefault('recipe', {})['ref_adapter'] = Path(ref_adapter).name if ref_adapter else None
+    manifest.setdefault('recipe', {})['ref_adapter'] = (str(ref_adapter).rsplit('/', 1)[-1] if ref_adapter else None)
 
 
 def dit_config_from(path: Path) -> DiTConfig:
@@ -339,21 +356,20 @@ def convert(base: Path | None, adapter_dir: Path | None, official: Path | None, 
     if comfy_dit is not None:
         from .comfy import ComfyDiTView
         cfg = DiTConfig()
-        reader = ComfyDiTView(Path(comfy_dit), cfg.num_layers, cfg.num_refiner_layers, cfg.inner_dim)
+        reader = ComfyDiTView(_src(comfy_dit), cfg.num_layers, cfg.num_refiner_layers, cfg.inner_dim)
     else:
         base = Path(base)
         cfg = dit_config_from(base / 'transformer')
         reader = ShardedReader(base / 'transformer')
     adapter = None
     if adapter_dir is not None:
-        adapter_dir = Path(adapter_dir)
-        adapter = Adapter(ShardedReader(adapter_dir))
+        adapter = Adapter(_adapter_reader(adapter_dir))
     has_dwd = adapter is not None and bool(adapter.keys_with_prefix('dwd_pixel_refiner.'))
 
     manifest = {'format': FORMAT, 'created': time.strftime('%Y-%m-%dT%H:%M:%S'),
                 'recipe': {'source': 'comfy-int8' if comfy_dit else 'diffusers', 'policy': policy, 'text_kind': text_kind, 'sampler': sampler,
                            'steps': SAMPLERS[sampler].adapter_steps if sampler in SAMPLERS else None,
-                           'adapter': str(adapter_dir.name) if adapter_dir else None, 'dwd': has_dwd}}
+                           'adapter': _adapter_name(adapter_dir) if adapter_dir else None, 'dwd': has_dwd}}
     convert_dit_globals(reader, adapter, out, cfg, has_dwd)
     manifest['dit'] = convert_dit(reader, adapter, out, cfg, policy, device, progress)
     manifest['refiner'] = convert_refiner(reader, adapter, out, cfg, device)
@@ -364,7 +380,7 @@ def convert(base: Path | None, adapter_dir: Path | None, official: Path | None, 
     if with_text and comfy_text is not None:
         from .comfy import ComfyTextView
         te_cfg_dir = Path(official) / 'text_encoder' if official is not None else None
-        manifest['text'] = convert_text(ComfyTextView(Path(comfy_text)), out, TextEncoderConfig(), 'int8', device,
+        manifest['text'] = convert_text(ComfyTextView(_src(comfy_text)), out, TextEncoderConfig(), text_kind, device,
                                         progress, rotate=True, config_dir=te_cfg_dir)
     elif with_text and base is not None and (Path(base) / 'text_encoder').exists():
         tcfg = text_config_from(Path(base) / 'text_encoder')

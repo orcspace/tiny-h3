@@ -88,3 +88,57 @@ def fetch_vae(repo: str, out: Path, *, decoder: bool, token=None) -> None:
             tensors.update(fetch_tensors(repo, f'vae/{shard}', lambda k: k.startswith(prefixes), token))
         dtype = torch.float32 if name == 'encoder' else torch.float16
         save_file({k: v.to(dtype).contiguous() for k, v in tensors.items()}, str(target))
+
+
+class RemoteFile:
+    """A remote .safetensors file read tensor by tensor with range requests (same interface as ``comfy._File``).
+
+    Nothing is written to disk: the converter streams a tensor, quantizes it and drops it. The whole 21 GB DiT or
+    27 GB text tower is therefore converted with a few GB of RAM and zero temporary disk space.
+    """
+
+    def __init__(self, url: str, token=None, retries: int = 6):
+        self.url, self.retries = url, retries
+        self.session = _session(token)
+        n = struct.unpack('<Q', self._range(0, 7))[0]
+        header = json.loads(self._range(8, 7 + n))
+        self.meta = header.pop('__metadata__', None) or {}
+        self.header, self.base = header, 8 + n
+        self.names = set(header)
+
+    # the interface of ``sources.ShardedReader``, so a LoRA / DWD adapter can be read remotely too
+    def keys(self):
+        return self.names
+
+    def __contains__(self, key):
+        return key in self.names
+
+    def metadata(self) -> dict:
+        return self.meta
+
+    def _range(self, start: int, end: int) -> bytes:
+        import time
+        last = None
+        for attempt in range(self.retries):
+            try:
+                data = _range(self.session, self.url, start, end)
+                if len(data) != end - start + 1:
+                    raise IOError(f'short range read: {len(data)} of {end - start + 1} bytes')
+                return data
+            except Exception as exc:  # network hiccups on a 50 GB transfer are expected: back off and retry
+                last = exc
+                time.sleep(min(2 ** attempt, 30))
+        raise IOError(f'{self.url}: {last}')
+
+    def get(self, key: str) -> torch.Tensor:
+        meta = self.header[key]
+        o0, o1 = meta['data_offsets']
+        if o1 == o0:
+            return torch.empty(meta['shape'], dtype=_DT[meta['dtype']])
+        blob = self._range(self.base + o0, self.base + o1 - 1)
+        return torch.frombuffer(bytearray(blob), dtype=_DT[meta['dtype']]).reshape(meta['shape']).clone()
+
+
+def hub_url(repo: str, filename: str, revision: str = 'main') -> str:
+    from huggingface_hub import hf_hub_url
+    return hf_hub_url(repo, filename, revision=revision)
