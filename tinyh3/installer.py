@@ -905,6 +905,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog='tinyh3 install', description='Установщик TinyH3 Video')
     d = default_dirs()
+    ap.add_argument('--dir', default=None, help='одна папка для всего: приложение, модели, текстовая башня, видео')
     ap.add_argument('--app-dir', default=None, help=f'папка приложения (по умолчанию {d["app_dir"]})')
     ap.add_argument('--models-dir')
     ap.add_argument('--outputs-dir')
@@ -931,6 +932,10 @@ def main(argv: list[str] | None = None) -> int:
     p = Prompts()
     gpu = detect_gpu()
     ram = total_ram_gb()
+    if a.dir:
+        a.app_dir = a.app_dir or a.dir
+        a.models_dir = a.models_dir or str(Path(a.dir) / 'models')
+        a.outputs_dir = a.outputs_dir or str(Path(a.dir) / 'videos')
     app_dir = a.app_dir or d['app_dir']
     prev = existing_install(app_dir)
     mode = a.mode or 'install'

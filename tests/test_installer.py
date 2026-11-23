@@ -180,3 +180,21 @@ def test_bootstrap_files():
     assert (root / 'installer' / 'bootstrap.ps1').read_bytes()[:3] == b'\xef\xbb\xbf'
     assert 'bootstrap.ps1' in (root / 'install.bat').read_text(encoding='utf-8')
     assert (root / 'install.sh').stat().st_mode & 0o111
+
+
+def test_single_dir_flag(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(I, 'free_gb', lambda p: 500.0)
+    monkeypatch.setattr(I, 'detect_gpu', lambda: GPU)
+    seen = {}
+
+    class Stub:
+        def __init__(self, choice, **kw):
+            seen['c'] = choice
+
+        def run(self):
+            return True
+    monkeypatch.setattr(I, 'Installer', Stub)
+    assert I.main(['--yes', '--dir', str(tmp_path / 'T')]) == 0
+    c = seen['c']
+    assert c.app_dir == str(tmp_path / 'T') and c.models_dir == str(tmp_path / 'T' / 'models')
+    assert c.outputs_dir == str(tmp_path / 'T' / 'videos') and c.text_dir == ''
