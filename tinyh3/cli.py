@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import logging
 import sys
 import time
@@ -11,6 +12,18 @@ from pathlib import Path
 from . import __version__
 from .config import (RESOLUTIONS, ASPECT_RATIOS, SAMPLERS, SAMPLER_ALIASES, UPSCALE, models_dir, canvas_size,
                      frames_for_seconds, Geometry, render_size)
+
+
+def _json_mode() -> bool:
+    return os.environ.get('TINYH3_PROGRESS') == 'json'
+
+
+def say(message: str, **fields):
+    """A human line, or in ``TINYH3_PROGRESS=json`` mode (used by the desktop installer) one JSON event per line."""
+    if _json_mode():
+        print(json.dumps({'event': 'phase', 'message': message.strip(), **fields}, ensure_ascii=False), flush=True)
+    else:
+        print(message)
 
 
 def _bar(done, total, width=28):
@@ -47,7 +60,35 @@ def _printer():
     return on_event
 
 
+def _doctor_json(a):
+    from . import native
+    from .hardware import probe
+    from .gpu_tuning import profile
+    from .runtime.attention import available
+    import torch
+    hw = probe()
+    info = {'version': __version__, 'hardware': hw.as_dict(), 'torch': torch.__version__,
+            'cuda_available': bool(torch.cuda.is_available()), 'attention': available(),
+            'native': native.version() if native.available() else None, 'models_dir': str(models_dir()),
+            'models': [], 'selftest': None, 'profile': None}
+    if models_dir().exists():
+        for m in sorted(models_dir().glob('*/manifest.json')):
+            root = m.parent
+            size = sum(f.stat().st_size for f in root.rglob('*') if f.is_file())  # symlinked text dir not followed
+            manifest = json.loads(m.read_text())
+            info['models'].append({'name': root.name, 'bytes': size, 'dit_ref': 'dit_ref' in manifest,
+                                   'vae': bool(manifest.get('vae')), 'steps': manifest.get('recipe', {}).get('steps')})
+    if torch.cuda.is_available():
+        from .kernels import selftest
+        info['selftest'] = selftest()
+        prof = profile(refresh=a.refresh)
+        info['profile'] = prof.summary if prof else None
+    print(json.dumps(info, ensure_ascii=False))
+
+
 def cmd_doctor(a):
+    if a.json:
+        return _doctor_json(a)
     from .hardware import probe
     from .gpu_tuning import profile, advice
     from .runtime.attention import available
@@ -116,6 +157,9 @@ def _resolve_low_disk(a):
 def _preflight(a, out: Path, text_dir: Path | None, ref: bool):
     from . import diskplan
     est = diskplan.estimate(a.policy, a.text, images=not a.no_images, ref=ref)
+    if text_dir is not None and (text_dir / 'unit_049.bin').exists():       # already converted: no space needed again
+        est['total'] -= est['text_drive']
+        est['text_drive'] = 0
     print('Что будет на диске:')
     print(diskplan.format_table(est, text_dir))
     problems = diskplan.check_space(models_dir(), text_dir, est)
@@ -148,17 +192,17 @@ def cmd_setup(a):
     out.mkdir(parents=True, exist_ok=True)
     if text_dir:
         diskplan.link_dir(out / 'text', text_dir)
-        print(f'Текстовая башня: {text_dir} (ссылка {out / "text"})')
+        say(f'Текстовая башня: {text_dir} (ссылка {out / "text"})')
     if a.source == 'comfy' and a.low_disk:
         from .convert.comfy import COMFY_REPO, COMFY_DIT, COMFY_TEXT
         from .convert.remote import hub_url
         from .config import OFFICIAL_PATTERNS, SOURCES
         from huggingface_hub import snapshot_download
-        print('Режим low-disk: веса читаются с Hub по частям и сразу квантуются, исходники на диск не сохраняются.')
+        say('Режим low-disk: веса читаются с Hub по частям и сразу квантуются, исходники на диск не сохраняются.')
         official = snapshot_download(SOURCES['official_repo'], local_dir=src / 'official',
                                      allow_patterns=OFFICIAL_PATTERNS)
         adapter = hub_url(SOURCES['adapter_repo'], f'{preset.adapter}/diffusion_pytorch_model.safetensors')
-        print(f'Конвертация в {out}…')
+        say(f'Конвертация в {out}…', stage='convert')
         convert(None, adapter, Path(official), out, policy=a.policy, text_kind=a.text, sampler=a.sampler,
                 comfy_dit=hub_url(COMFY_REPO, COMFY_DIT), comfy_text=hub_url(COMFY_REPO, COMFY_TEXT),
                 progress=_convert_progress())
@@ -185,7 +229,7 @@ def cmd_setup(a):
         import shutil
         shutil.rmtree(src, ignore_errors=True)
         print(f'\nИсходники удалены: {src}')
-    print(f'\nГотово: {out}\nЗапуск: tinyh3 serve --open')
+    say(f'Готово: {out}', stage='done', model=str(out))
 
 
 def _ensure_vae(out: Path, decoder: bool):
@@ -193,7 +237,7 @@ def _ensure_vae(out: Path, decoder: bool):
     read from the Hub with range requests: the 10 GB checkpoint is never downloaded as a whole."""
     from .convert.remote import fetch_vae
     from .config import SOURCES
-    print('\nVAE (энкодер' + (' и декодер' if decoder else '') + ') …')
+    say('VAE (энкодер' + (' и декодер' if decoder else '') + ') …', stage='vae')
     fetch_vae(SOURCES['official_repo'], out, decoder=decoder)
     m = json.loads((out / 'manifest.json').read_text())
     m['vae'] = {'encoder': 'vae/encoder.safetensors',
@@ -211,14 +255,14 @@ def _setup_ref(a, src: Path, out: Path):
         from .config import REF_ADAPTER_FILE, REF_ADAPTER_REPO
         dit = hub_url(COMFY_REPO, 'diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors')
         adapter = hub_url(REF_ADAPTER_REPO, REF_ADAPTER_FILE)
-        print('\nRef2VA (low-disk): веса читаются с Hub по частям, на диск не сохраняются.')
+        say('Ref2VA (low-disk): веса читаются с Hub по частям, на диск не сохраняются.', stage='ref')
     else:
         from .convert.comfy import download_ref
         print(f'\nRef2VA: Comfy-Org INT8 (~21 ГБ) + LoRA Turbo 4 (~1.4 ГБ) в {src}…')
         paths = download_ref(src)
         dit, adapter = Path(paths['dit']), Path(paths['adapter'])
     _ensure_vae(out, decoder=True)
-    print('Конвертация Ref2VA…')
+    say('Конвертация Ref2VA…', stage='ref')
     convert(None, None, None, out, policy=policy, only_ref=True, ref_dit=dit, ref_adapter=adapter,
             progress=_convert_progress())
 
@@ -247,6 +291,11 @@ def cmd_setup_ref(a):
 
 
 def _convert_progress():
+    if _json_mode():
+        def jp(stage, i, n):
+            print(json.dumps({'event': 'progress', 'stage': stage, 'i': i, 'n': n}), flush=True)
+        return jp
+
     def p(stage, i, n):
         sys.stdout.write(f'\r  {stage:<6} {_bar(i, n)} {i}/{n}   ')
         sys.stdout.flush()
@@ -307,7 +356,15 @@ def cmd_bench(a):
         print(f'  внимание {name:<7} {a.tokens} токенов × 8 голов: {ms:.1f} мс')
 
 
+def _install(rest):
+    from .installer import main as install_main
+    return install_main(rest)
+
+
 def main(argv=None):
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args[:1] == ['install']:
+        sys.exit(_install(args[1:]))
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s %(name)s: %(message)s')
     p = argparse.ArgumentParser(prog='tinyh3', description='TinyH3 Video — MiniMax H3 на 8 ГБ видеопамяти')
     p.add_argument('--version', action='version', version=__version__)
@@ -315,6 +372,7 @@ def main(argv=None):
 
     d = sub.add_parser('doctor', help='проверить железо, ядра и модели')
     d.add_argument('--refresh', action='store_true', help='перемерить скорость тензорных ядер')
+    d.add_argument('--json', action='store_true', help='машиночитаемый вывод (для установщика)')
     d.set_defaults(fn=cmd_doctor)
 
     def geo(sp):
@@ -405,6 +463,8 @@ def main(argv=None):
     sv.add_argument('--port', type=int, default=7860)
     sv.add_argument('--open', action='store_true')
     sv.set_defaults(fn=cmd_serve)
+
+    sub.add_parser('install', help='установщик (папки, PyTorch, модели, start.bat); см. tinyh3 install --help')
 
     b = sub.add_parser('bench', help='замерить тензорные ядра и бэкенды внимания')
     b.add_argument('--tokens', type=int, default=16384)

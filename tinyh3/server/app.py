@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import sqlite3
 import threading
@@ -432,10 +433,44 @@ def create_app(*, subprocess: bool = True) -> FastAPI:
     return app
 
 
+def _port_free(host: str, port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0 if os.name == 'nt' else 1)
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def pick_port(host: str, preferred: int, tries: int = 20) -> int:
+    """``preferred`` if it is free, otherwise the next free port (a second copy, or another program, holds it)."""
+    for port in range(preferred, preferred + tries):
+        if _port_free(host, port):
+            return port
+    raise OSError(f'нет свободного порта в диапазоне {preferred}-{preferred + tries - 1}')
+
+
+def _open_when_ready(host: str, port: int, timeout: float = 120.0) -> None:
+    import socket
+    import webbrowser
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                webbrowser.open(f'http://{host}:{port}')
+                return
+        except OSError:
+            time.sleep(0.3)
+
+
 def serve(host='127.0.0.1', port=7860, open_browser=False):
     import uvicorn
+    chosen = pick_port(host, port)
+    if chosen != port:
+        print(f'Порт {port} занят, использую {chosen}')
     if open_browser:
-        import webbrowser
-        threading.Timer(1.5, lambda: webbrowser.open(f'http://{host}:{port}')).start()
-    print(f'TinyH3 Video: http://{host}:{port}')
-    uvicorn.run(create_app(), host=host, port=port, log_level='warning')
+        threading.Thread(target=_open_when_ready, args=(host, chosen), daemon=True).start()
+    print(f'TinyH3 Video: http://{host}:{chosen}   (закройте окно или нажмите Ctrl+C, чтобы остановить)', flush=True)
+    uvicorn.run(create_app(), host=host, port=chosen, log_level='warning')

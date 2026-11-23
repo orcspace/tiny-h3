@@ -108,3 +108,24 @@ def dense_linear(x, w, bias=None):
     else:
         weight = ref.dequantize_weight(w, x.dtype if x.is_cuda else torch.float32).to(x.dtype)
     return torch.nn.functional.linear(x, weight, None if bias is None else bias.to(x.dtype))
+
+
+def selftest() -> dict:
+    """Run the fused kernels on a small CUDA tensor and compare with the reference: tells a freshly installed
+    Triton (e.g. triton-windows) that does not match the installed PyTorch from one that works."""
+    out = {'triton_import': get_triton() is not None, 'triton_ok': False, 'int_mm_ok': False, 'error': None}
+    if not torch.cuda.is_available():
+        out['error'] = 'CUDA недоступна'
+        return out
+    try:
+        x = torch.randn(40, 512, device='cuda')
+        q, s = rotate_quantize(x)
+        q0, s0 = ref.rotate_quantize(x.cpu())
+        out['triton_ok'] = bool(get_triton() is not None and (q.cpu().int() - q0.int()).abs().max() <= 1
+                                and torch.allclose(s.cpu(), s0, rtol=1e-4))
+        a = torch.randint(-5, 5, (32, 64), device='cuda', dtype=torch.int8)
+        b = torch.randint(-5, 5, (64, 32), device='cuda', dtype=torch.int8)
+        out['int_mm_ok'] = bool(torch.equal(torch._int_mm(a, b).cpu(), (a.cpu().int() @ b.cpu().int())))
+    except Exception as exc:  # a broken Triton / driver shows up here, not in the middle of a generation
+        out['error'] = f'{type(exc).__name__}: {exc}'[:300]
+    return out
