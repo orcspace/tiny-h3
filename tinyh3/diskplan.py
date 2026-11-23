@@ -96,3 +96,38 @@ def format_table(est: dict, text_dir: Path | None = None) -> str:
         lines.append(f'  из них на основном диске{"":<20}{est["main_drive"] / GB:6.1f} ГБ')
         lines.append(f'  из них на {str(text_dir)[:30]:<35}{est["text_drive"] / GB:6.1f} ГБ')
     return '\n'.join(lines)
+
+
+def move_dir(src: Path, dst: Path, progress=None) -> None:
+    """Move ``src`` (a directory inside a model) to ``dst`` on another drive and leave a link behind.
+
+    Safe order: copy, verify every file's size, create the link under a temporary name, swap, delete the original.
+    An interruption at any point leaves the original in place.
+    """
+    src, dst = Path(src), Path(dst)
+    if src.is_symlink():
+        raise ValueError(f'{src} уже ссылка на {src.resolve()}')
+    if not src.is_dir():
+        raise FileNotFoundError(src)
+    size = sum(f.stat().st_size for f in src.rglob('*') if f.is_file())
+    if free_bytes(dst) < size * 1.02:
+        raise OSError(f'на диске с {dst} свободно {free_bytes(dst) / GB:.1f} ГБ, нужно {size * 1.02 / GB:.1f} ГБ')
+    files = [f for f in src.rglob('*') if f.is_file()]
+    dst.mkdir(parents=True, exist_ok=True)
+    for i, f in enumerate(files, 1):
+        target = dst / f.relative_to(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not (target.exists() and target.stat().st_size == f.stat().st_size):
+            shutil.copy2(f, target)
+        if target.stat().st_size != f.stat().st_size:
+            raise OSError(f'копия {target} не совпала по размеру')
+        if progress:
+            progress(i, len(files))
+    backup = src.with_name(src.name + '.moving')
+    src.rename(backup)
+    try:
+        link_dir(src, dst)
+    except Exception:
+        backup.rename(src)
+        raise
+    shutil.rmtree(backup)

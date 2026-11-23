@@ -218,6 +218,19 @@ def _setup_ref(a, src: Path, out: Path):
             progress=_convert_progress())
 
 
+def cmd_move_text(a):
+    """Free the main drive: move the text tower (13-25 GB) of an installed model to another drive."""
+    from . import diskplan
+    stores = sorted(p.parent for p in models_dir().glob('*/manifest.json')) if models_dir().exists() else []
+    out = Path(a.model) if a.model else (stores[0] if stores else None)
+    if out is None:
+        raise SystemExit('модель не найдена')
+    dest = Path(a.dest).expanduser()
+    print(f'Переношу {out / "text"} → {dest} …')
+    diskplan.move_dir(out / 'text', dest, progress=lambda i, n: print(f'\r  файл {i}/{n}', end='', flush=True))
+    print(f'\nГотово. На основном диске освобождено место, модель работает как раньше.')
+
+
 def cmd_setup_ref(a):
     """Add Ref2VA (references → video) to an existing model."""
     stores = sorted(p.parent for p in models_dir().glob('*/manifest.json')) if models_dir().exists() else []
@@ -338,6 +351,11 @@ def main(argv=None):
     s.add_argument('--dry-run', action='store_true', help='показать, что и где займёт место, и выйти')
     s.add_argument('--no-images', action='store_true', help='без картинок в промпте: -1.5 ГБ (нет задач с кадрами и референсами)')
     s.set_defaults(fn=cmd_setup)
+
+    mv = sub.add_parser('move-text', help='перенести текстовую башню готовой модели на другой диск')
+    mv.add_argument('dest', help='папка на другом диске, например D:\\tinyh3-text')
+    mv.add_argument('--model', help='папка модели (по умолчанию первая)')
+    mv.set_defaults(fn=cmd_move_text)
 
     sr = sub.add_parser('setup-ref', help='добавить Ref2VA (референсы → видео) к готовой модели')
     sr.add_argument('--sources', default=str(Path.home() / '.tinyh3' / 'sources'))

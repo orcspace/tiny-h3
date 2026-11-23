@@ -157,3 +157,20 @@ def test_disk_estimates_and_text_dir(tmp_path):
     diskplan.link_dir(model / 'text', other)              # idempotent
     with pytest.raises(FileExistsError):
         diskplan.link_dir(model / 'text', tmp_path / 'elsewhere')
+
+
+def test_move_text_dir(tmp_path):
+    model = tmp_path / 'model'
+    (model / 'text').mkdir(parents=True)
+    (model / 'text' / 'unit_000.bin').write_bytes(b'a' * 1000)
+    (model / 'text' / 'sub').mkdir()
+    (model / 'text' / 'sub' / 'embed.bin').write_bytes(b'b' * 500)
+    dest = tmp_path / 'hdd' / 'text'
+    seen = []
+    diskplan.move_dir(model / 'text', dest, progress=lambda i, n: seen.append((i, n)))
+    assert (model / 'text').is_symlink() and seen[-1] == (2, 2)
+    assert (model / 'text' / 'unit_000.bin').read_bytes() == b'a' * 1000      # readable through the link
+    assert (dest / 'sub' / 'embed.bin').stat().st_size == 500
+    assert not (model / 'text.moving').exists()
+    with pytest.raises(ValueError):
+        diskplan.move_dir(model / 'text', tmp_path / 'again')
