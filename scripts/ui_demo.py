@@ -21,7 +21,7 @@ os.environ.setdefault('TINYH3_SIMULATE', '8,16')
 os.environ.setdefault('TINYH3_HOME', tempfile.mkdtemp(prefix='tinyh3-demo-'))
 _demo_model = Path(os.environ['TINYH3_HOME']) / 'models' / 'h3-pi2-dwd-int8'
 _demo_model.mkdir(parents=True, exist_ok=True)
-(_demo_model / 'manifest.json').write_text('{"format": "tinyh3-store-v1", "recipe": {"steps": 2, "demo": true}}')
+(_demo_model / "manifest.json").write_text('{"format": "tinyh3-store-v1", "recipe": {"steps": 2, "demo": true}, "dit_ref": {}}')
 
 import torch  # noqa: E402
 

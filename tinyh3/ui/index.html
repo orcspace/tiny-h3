@@ -40,6 +40,27 @@ textarea:focus, select:focus, input:focus { border-color: var(--accent); }
 .seg { display: flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; flex-wrap: wrap; }
 .seg button { flex: 1; border: 0; background: transparent; padding: 7px 8px; border-radius: 8px; cursor: pointer; color: var(--muted); min-width: 52px; }
 .seg button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 0 #0003, inset 0 0 0 1px var(--line); }
+.tasks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.task { border: 1px solid var(--line); background: var(--panel2); border-radius: 10px; padding: 8px 6px; cursor: pointer; text-align: center; font-size: 13px; line-height: 1.25; }
+.task small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.task.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel2)); }
+.task .ico { display: block; font-size: 18px; margin-bottom: 2px; }
+.drops { display: grid; gap: 10px; }
+.drops.two { grid-template-columns: 1fr 1fr; }
+.drop { position: relative; border: 1.5px dashed var(--line); border-radius: 12px; min-height: 108px; background: var(--panel2); display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted); font-size: 12px; cursor: pointer; overflow: hidden; padding: 8px; }
+.drop:hover, .drop.over { border-color: var(--accent); color: var(--text); }
+.drop img, .drop video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.drop b { display: block; color: var(--text); font-size: 13px; margin-bottom: 2px; }
+.drop .tag { position: absolute; left: 6px; top: 6px; z-index: 2; background: #000a; color: #fff; border-radius: 6px; padding: 1px 7px; font-size: 11px; }
+.drop .x, .ref .x { position: absolute; right: 6px; top: 6px; z-index: 2; border: 0; background: #000b; color: #fff; width: 22px; height: 22px; border-radius: 50%; cursor: pointer; line-height: 22px; padding: 0; }
+.refs { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 8px; margin-top: 10px; }
+.ref { position: relative; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: var(--panel2); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-size: 28px; }
+.ref img, .ref video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ref .tag { position: absolute; left: 4px; bottom: 4px; z-index: 2; background: #000a; color: #fff; border-radius: 5px; padding: 0 6px; font-size: 10px; }
+.counts { display: flex; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
+.counts b { color: var(--text); font-variant-numeric: tabular-nums; }
+.fixed-mode { border: 1px solid var(--line); background: var(--panel2); border-radius: 12px; padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.fixed-mode b { color: var(--text); font-size: 14px; display: block; margin-bottom: 2px; }
 .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .mode { text-align: left; border: 1px solid var(--line); background: var(--panel2); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
 .mode b { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
@@ -105,10 +126,16 @@ details summary { cursor: pointer; color: var(--muted); }
   <section class="stack">
     <div class="card stack">
       <div>
+        <h2>Что генерируем</h2>
+        <div class="tasks" id="tasks"></div>
+        <div class="note" id="task-about" style="margin-top:8px"></div>
+      </div>
+      <div id="sources"></div>
+      <div>
         <h2>Промпт</h2>
         <textarea id="prompt" placeholder="Опишите сцену, движение камеры, звук и реплики. Например: Live-action, handheld smartphone selfie video…"></textarea>
       </div>
-      <div>
+      <div id="mode-box">
         <label class="f">Режим</label>
         <div class="modes" id="sampler"></div>
       </div>
@@ -189,7 +216,13 @@ const $ = (s) => document.querySelector(s);
 const STAGES = [['text', 'Текст'], ['load', 'Веса'], ['denoise', 'Денойзинг'], ['decode', 'DWD'], ['upscale', 'Апскейл'], ['audio', 'Звук/MP4']];
 const store = { get(k, d) { try { return JSON.parse(localStorage.getItem('th3.' + k)) ?? d; } catch { return d; } },
                 set(k, v) { try { localStorage.setItem('th3.' + k, JSON.stringify(v)); } catch {} } };
-const state = Object.assign({ sampler: 'fast', resolution: '480p', aspect: '16:9', spark_mode: '', upscale: 'none' }, store.get('form', {}));
+const state = Object.assign({ sampler: 'fast', resolution: '480p', aspect: '16:9', spark_mode: '', upscale: 'none', task: 't2v' }, store.get('form', {}));
+state.first = null; state.last = null; state.refs = [];  // uploaded files are not restored across reloads
+let TASKS = {}, LIMITS = { image: 9, video: 3, audio: 3, total: 12 }, REF_OK = true;
+const TASK_ICON = { t2v: '✎', i2v: '🖼', flf2v: '⇄', ref2v: '❖' };
+const KIND_ICON = { image: '🖼', video: '🎞', audio: '♪' };
+const EXT = { png: 'image', jpg: 'image', jpeg: 'image', webp: 'image', bmp: 'image', mp4: 'video', mov: 'video', mkv: 'video', webm: 'video', wav: 'audio', mp3: 'audio', flac: 'audio', m4a: 'audio', ogg: 'audio' };
+if (!['t2v', 'i2v', 'flf2v', 'ref2v'].includes(state.task)) state.task = 't2v';
 if (!['quality', 'balance', 'fast', 'fast-high'].includes(state.sampler)) state.sampler = 'fast';
 let MODES = {};
 let jobs = [];
@@ -206,6 +239,75 @@ function seg(id, values, key, labels) {
     b.onclick = () => { state[key] = b.dataset.v; seg(id, null, key); saveForm(); estimate(); };
   });
 }
+function kindOf(file) { return EXT[(file.name.split('.').pop() || '').toLowerCase()] || null; }
+
+async function uploadFile(file) {
+  const r = await fetch('/api/uploads?name=' + encodeURIComponent(file.name), { method: 'POST', body: file,
+    headers: { 'Content-Type': 'application/octet-stream' } });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
+  return r.json();
+}
+
+function tasks() {
+  $('#tasks').innerHTML = Object.entries(TASKS).map(([k, t]) => `<button class="task ${k === state.task ? 'on' : ''}" data-v="${k}">
+    <span class="ico">${TASK_ICON[k] || ''}</span>${esc(t.title)}</button>`).join('');
+  $('#tasks').querySelectorAll('button').forEach(b => b.onclick = () => { state.task = b.dataset.v; tasks(); sources(); saveForm(); estimate(); });
+  const t = TASKS[state.task];
+  $('#task-about').textContent = (t ? t.about : '') + (state.task === 'ref2v' && !REF_OK ? ' Ref2VA не установлен: выполните `tinyh3 setup-ref`.' : '');
+  $('#mode-box').style.display = state.task === 'ref2v' ? 'none' : '';
+}
+
+function dropZone(slot, label, hint) {
+  const f = state[slot];
+  return `<div class="drop" data-slot="${slot}">${f ? `<span class="tag">${label}</span><img src="/api/uploads/${f.id}" alt=""><button class="x" data-x="${slot}" title="Убрать">×</button>`
+    : `<div><b>${label}</b>${hint}<br>перетащите или нажмите</div>`}</div>`;
+}
+
+function sources() {
+  const box = $('#sources'), t = state.task;
+  if (t === 't2v') { box.innerHTML = ''; return; }
+  if (t === 'i2v') box.innerHTML = `<h2>Кадр</h2><div class="drops">${dropZone('first', 'Первый кадр', 'PNG · JPG · WebP')}</div>`;
+  else if (t === 'flf2v') box.innerHTML = `<h2>Кадры</h2><div class="drops two">${dropZone('first', 'Первый кадр', 'начало')}${dropZone('last', 'Последний кадр', 'конец')}</div>`;
+  else {
+    const c = { image: 0, video: 0, audio: 0 }; state.refs.forEach(r => c[r.kind]++);
+    box.innerHTML = `<h2>Референсы</h2><div class="drops"><div class="drop" data-slot="refs"><div><b>Добавить референсы</b>изображения, видео (со звуком), аудио<br>перетащите или нажмите</div></div></div>
+      <div class="refs">${state.refs.map((r, i) => `<div class="ref">${r.kind === 'image' ? `<img src="/api/uploads/${r.id}" alt="">` : r.kind === 'video' ? `<video src="/api/uploads/${r.id}#t=0.5" muted preload="metadata"></video>` : KIND_ICON.audio}
+        <span class="tag">${KIND_ICON[r.kind]} ${i + 1}</span><button class="x" data-rm="${i}" title="Убрать">×</button></div>`).join('')}</div>
+      <div class="counts"><span>изображений <b>${c.image}/${LIMITS.image}</b></span><span>видео <b>${c.video}/${LIMITS.video}</b></span><span>аудио <b>${c.audio}/${LIMITS.audio}</b></span><span>всего <b>${state.refs.length}/${LIMITS.total}</b></span></div>
+      <div class="note" style="margin-top:6px">Порядок важен: в промпте референсы называются «Picture 1», «Video 1», «Audio 1» по очереди.</div>`;
+  }
+  const pick = (slot, files) => handleFiles(slot, [...files]);
+  box.querySelectorAll('.drop').forEach(z => {
+    const slot = z.dataset.slot;
+    z.onclick = (e) => { if (e.target.closest('.x')) return;
+      const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = slot === 'refs';
+      inp.accept = slot === 'refs' ? 'image/*,video/*,audio/*' : 'image/*'; inp.onchange = () => pick(slot, inp.files); inp.click(); };
+    z.ondragover = (e) => { e.preventDefault(); z.classList.add('over'); };
+    z.ondragleave = () => z.classList.remove('over');
+    z.ondrop = (e) => { e.preventDefault(); z.classList.remove('over'); pick(slot, e.dataTransfer.files); };
+  });
+  box.querySelectorAll('[data-x]').forEach(b => b.onclick = (e) => { e.stopPropagation(); state[b.dataset.x] = null; sources(); estimate(); });
+  box.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { state.refs.splice(+b.dataset.rm, 1); sources(); estimate(); });
+}
+
+async function handleFiles(slot, files) {
+  for (const file of files) {
+    const kind = kindOf(file);
+    if (!kind) { toast(`Формат не поддерживается: ${file.name}`); continue; }
+    if (slot !== 'refs' && kind !== 'image') { toast('Здесь нужно изображение'); continue; }
+    if (slot === 'refs') {
+      const n = state.refs.filter(r => r.kind === kind).length;
+      if (n >= LIMITS[kind] || state.refs.length >= LIMITS.total) { toast(`Лимит референсов: ${kind} — ${LIMITS[kind]}, всего ${LIMITS.total}`); continue; }
+    }
+    try {
+      toast(`Загрузка ${file.name}…`);
+      const up = await uploadFile(file);
+      if (slot === 'refs') state.refs.push({ id: up.id, name: up.name, kind: up.kind }); else state[slot] = { id: up.id, name: up.name };
+      sources(); estimate(); $('#toast').style.display = 'none';
+    } catch (e) { toast(e.message); }
+  }
+}
+
 function modes() {
   const el = $('#sampler');
   el.innerHTML = Object.entries(MODES).map(([k, m]) => `<button class="mode ${k === state.sampler ? 'on' : ''} ${k === 'fast-high' ? 'hot' : ''}" data-v="${k}">
@@ -218,7 +320,7 @@ function setSeconds(v) {
 }
 function saveForm() {
   state.seconds = +$('#seconds').value; state.seed = +$('#seed').value; state.attention = $('#attention').value;
-  state.prompt = $('#prompt').value; store.set('form', state);
+  state.prompt = $('#prompt').value; const { first, last, refs, ...persist } = state; store.set('form', persist);
 }
 
 async function api(path, opts = {}) {
@@ -240,7 +342,8 @@ async function loadInfo() {
   chips.push(`<span class="chip ${info.models.length ? 'ok' : 'warn'}">${info.models.length ? esc(info.models[0]) : 'нет модели'}</span>`);
   $('#chips').innerHTML = chips.join('');
   $('#advice').textContent = (info.advice || []).slice(1).join(' ');
-  MODES = info.samplers; modes();
+  MODES = info.samplers; TASKS = info.tasks; LIMITS = info.ref_limits; REF_OK = info.ref_available;
+  modes(); tasks(); sources();
   seg('res', info.resolutions, 'resolution');
   seg('aspect', info.aspects, 'aspect');
   if (!info.models.length) toast('Модель не найдена: выполните `tinyh3 setup`');
@@ -253,7 +356,7 @@ function estimate() {
     try {
       const e = await api('/api/estimate', { method: 'POST', body: JSON.stringify({ seconds: +$('#seconds').value,
         resolution: state.resolution, aspect: state.aspect, sampler: state.sampler, attention: $('#attention').value,
-        upscale: state.upscale }) });
+        upscale: state.upscale, task: state.task, references: state.refs.map(r => ({ kind: r.kind, id: r.id })) }) });
       $('#e-total').textContent = e.fits ? '≈ ' + fmt(e.est.total_s) : '✕';
       $('#e-step').textContent = e.fits ? fmt(e.est.denoise_s) : '—';
       $('#e-size').textContent = `${e.width}×${e.height}`;
@@ -295,7 +398,7 @@ function render() {
     const media = j.status === 'done' ? `<video src="/api/videos/${j.id}" controls preload="metadata" playsinline></video>` :
       `<div class="empty"><span class="badge ${j.status}">${j.status === 'failed' ? 'ошибка' : 'отменено'}</span><div class="note" style="margin-top:8px">${esc(j.error || '')}</div></div>`;
     return `<div class="tile">${media}<div class="meta"><p>${esc(r.prompt)}</p>
-      ${esc((MODES[r.sampler] || {}).title || r.sampler)} · ${esc(r.resolution)}${r.upscale && r.upscale !== 'none' ? ' → ' + esc(r.upscale) : ''} · ${esc(r.aspect)} · ${r.seconds} с · seed <span class="mono">${rep.request ? rep.request.seed : r.seed}</span>
+      ${esc((TASKS[r.task || 't2v'] || {}).title || '')} · ${r.task === 'ref2v' ? 'Turbo 4' : esc((MODES[r.sampler] || {}).title || r.sampler)} · ${esc(r.resolution)}${r.upscale && r.upscale !== 'none' ? ' → ' + esc(r.upscale) : ''} · ${esc(r.aspect)} · ${r.seconds} с · seed <span class="mono">${rep.request ? rep.request.seed : r.seed}</span>
       ${rep.total_seconds ? ' · ' + fmt(rep.total_seconds) : ''}</div>
       <div class="acts">${j.status === 'done' ? `<a class="btn" href="/api/videos/${j.id}" download>Скачать</a>` : ''}
       <button class="btn" onclick='reuse(${JSON.stringify(j.id)})'>Повторить</button>
@@ -310,8 +413,11 @@ function reuse(id) {
   const j = jobs.find(x => x.id === id); if (!j) return;
   const r = j.request, seed = j.report && j.report.request ? j.report.request.seed : r.seed;
   $('#prompt').value = r.prompt; $('#seed').value = seed; setSeconds(r.seconds);
-  Object.assign(state, { sampler: r.sampler, resolution: r.resolution, aspect: r.aspect, spark_mode: r.spark_mode || '', upscale: r.upscale || 'none' });
-  modes(); ['res', 'aspect', 'spark_mode', 'upscale'].forEach(id => seg(id, null, id === 'res' ? 'resolution' : id));
+  const idOf = (p) => p ? p.split('/').pop() : null;
+  Object.assign(state, { sampler: r.sampler, resolution: r.resolution, aspect: r.aspect, spark_mode: r.spark_mode || '', upscale: r.upscale || 'none',
+    task: r.task || 't2v', first: r.first ? { id: idOf(r.first) } : null, last: r.last ? { id: idOf(r.last) } : null,
+    refs: (r.references || []).map(x => ({ id: x.id || idOf(x.path), kind: x.kind })) });
+  tasks(); sources(); modes(); ['res', 'aspect', 'spark_mode', 'upscale'].forEach(id => seg(id, null, id === 'res' ? 'resolution' : id));
   saveForm(); estimate(); window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -319,10 +425,17 @@ $('#go').onclick = async () => {
   saveForm();
   const prompt = $('#prompt').value.trim();
   if (!prompt) { toast('Напишите промпт'); return; }
+  const t = state.task;
+  if ((t === 'i2v' || t === 'flf2v') && !state.first) { toast('Добавьте первый кадр'); return; }
+  if (t === 'flf2v' && !state.last) { toast('Добавьте последний кадр'); return; }
+  if (t === 'ref2v' && !state.refs.length) { toast('Добавьте хотя бы один референс'); return; }
+  if (t === 'ref2v' && state.refs.every(r => r.kind === 'audio')) { toast('Аудио нужно дополнить изображением или видео'); return; }
   try {
     await api('/api/jobs', { method: 'POST', body: JSON.stringify({ prompt, seconds: +$('#seconds').value, resolution: state.resolution,
       aspect: state.aspect, sampler: state.sampler, seed: +$('#seed').value, attention: $('#attention').value,
-      spark_mode: state.spark_mode || null, upscale: state.upscale }) });
+      spark_mode: state.spark_mode || null, upscale: state.upscale, task: t,
+      first: t === 'i2v' || t === 'flf2v' ? state.first.id : null, last: t === 'flf2v' ? state.last.id : null,
+      references: t === 'ref2v' ? state.refs.map(r => ({ kind: r.kind, id: r.id })) : [] }) });
     refresh();
   } catch (e) { toast(e.message); }
 };
