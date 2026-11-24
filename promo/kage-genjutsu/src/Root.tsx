@@ -1,4 +1,5 @@
 import '@fontsource/anton/400.css';
+import '@fontsource/archivo-black/400.css';
 import '@fontsource/inter/500.css';
 import '@fontsource/inter/600.css';
 import '@fontsource/inter/700.css';
@@ -12,7 +13,7 @@ import {DURATION, FPS, H, W} from './lib';
 // Wait for the fonts so no frame is rendered with a fallback face.
 const handle = delayRender('fonts');
 Promise.all(
-  ['400 100px Anton', '500 40px Inter', '700 40px Inter', '800 40px Inter', '900 40px Inter'].map((f) => document.fonts.load(f)),
+  ['400 100px Anton', '400 100px "Archivo Black"', '500 40px Inter', '700 40px Inter', '800 40px Inter', '900 40px Inter'].map((f) => document.fonts.load(f)),
 ).then(() => continueRender(handle), () => continueRender(handle));
 
 export const RemotionRoot: React.FC = () => (

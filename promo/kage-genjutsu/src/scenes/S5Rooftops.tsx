@@ -1,6 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, spring, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Flash, Slam, Slot} from '../components';
+import {LightSweep, Shockwave, Stagger} from '../motion';
 import {C, FONT, H, W, lerp, punch, shake} from '../lib';
 
 // 9.8–12.2 s: diagonal split screen — the ninja on the rooftops / his shadow running ahead. TRANSFER ↔ MOTION.
@@ -72,6 +73,9 @@ export const S5Rooftops: React.FC = () => {
           style={{transformOrigin: '100% 50%'}}
         />
       </div>
+      <Shockwave at={16} x={500} y={700} rings={2} />
+      <Shockwave at={28} x={1450} y={880} rings={2} />
+      <LightSweep at={44} />
       <Flash at={0} len={4} />
     </AbsoluteFill>
   );

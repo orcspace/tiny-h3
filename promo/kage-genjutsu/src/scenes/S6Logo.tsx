@@ -1,6 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, OffthreadVideo, staticFile, useCurrentFrame} from 'remotion';
-import {Assemble, Flash, Reveal, Slot, Smoke} from '../components';
+import {Flash, Reveal, Slot, Smoke} from '../components';
+import {LightSweep, Shockwave, SliceText, Stagger} from '../motion';
 import {C, FONT, lerp, lin, shake, useMode} from '../lib';
 
 // 11.9–15.0 s: black ink blooms over the last shot and swallows it, the blood moon rises out of the dark,
@@ -11,7 +12,7 @@ export const S6Logo: React.FC = () => {
   const sh = shake(f, [18, 30, 81], 18);
   const pulse = 0.55 + 0.25 * Math.sin(f / 5);
   const push = lin(f, [16, 94], [1.0, 1.08]);
-  const line = lerp(f, [56, 70], [0, 1]);
+  const line = lerp(f, [60, 74], [0, 1]);
   const swallow = lin(f, [4, 16], [0, 1]); // the frame goes to ink-black
   const emerge = lin(f, [16, 30], [0, 1]); // the moon shot comes out of it
 
@@ -35,26 +36,52 @@ export const S6Logo: React.FC = () => {
             }}
           />
           <AbsoluteFill style={{justifyContent: 'center', alignItems: 'center', flexDirection: 'column'}}>
-            <div style={{textShadow: `0 0 50px rgba(255,31,53,${pulse}), 0 10px 0 ${C.blood}`}}>
-              <Assemble text="KAGE GENJUTSU" at={30} size={220} seed={5} stagger={1.5} />
-            </div>
-            <div
-              style={{
-                marginTop: 26,
-                height: 5,
-                width: 900 * line,
-                background: `linear-gradient(90deg, transparent, ${C.hot}, transparent)`,
-                boxShadow: `0 0 20px ${C.hot}`,
-              }}
-            />
-            <Reveal at={60} style={{marginTop: 22}}>
-              <div style={{fontFamily: FONT.ui, fontWeight: 700, fontSize: 40, color: C.white, letterSpacing: lerp(f, [60, 86], [40, 16])}}>
-                BECOME THE ILLUSION
+            <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', transform: `scale(${1 + Math.sin(f / 9) * 0.008})`}}>
+              {/* small brand line above, like the "Higgsfield" mark */}
+              <div style={{display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6}}>
+                <div
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 17,
+                    border: `5px solid ${C.hot}`,
+                    transform: `scale(${lerp(f, [30, 38], [0, 1], (t) => 1 - (1 - t) ** 3)}) rotate(${f * 6}deg)`,
+                    borderRightColor: 'transparent',
+                  }}
+                />
+                <Stagger text="KAGE" at={32} style={{fontFamily: FONT.ui, fontWeight: 800, fontSize: 52, color: C.white, letterSpacing: 4}} />
               </div>
-            </Reveal>
+              <div style={{filter: `drop-shadow(0 0 ${30 * pulse}px rgba(255,31,53,0.55))`}}>
+                <SliceText text="GENJUTSU" at={36} size={190} slices={7} glitchAt={[62, 81, 88]} />
+              </div>
+              <div style={{alignSelf: 'flex-end', marginTop: 4, marginRight: 8}}>
+                <Reveal at={56}>
+                  <div style={{fontFamily: FONT.wide, fontStyle: 'italic', fontSize: 50, color: C.white, transform: 'skewX(-10deg)'}}>
+                    TRY IT <span style={{color: C.hot}}>NOW</span>
+                  </div>
+                </Reveal>
+              </div>
+              <div
+                style={{
+                  marginTop: 22,
+                  height: 4,
+                  width: 1000 * line,
+                  background: `linear-gradient(90deg, transparent, ${C.hot}, transparent)`,
+                  boxShadow: `0 0 20px ${C.hot}`,
+                }}
+              />
+              <Reveal at={66} style={{marginTop: 18}}>
+                <div style={{fontFamily: FONT.ui, fontWeight: 700, fontSize: 30, color: C.white, letterSpacing: lerp(f, [66, 90], [36, 14])}}>
+                  BECOME THE ILLUSION
+                </div>
+              </Reveal>
+            </div>
           </AbsoluteFill>
         </AbsoluteFill>
       )}
+      <Shockwave at={44} />
+      <LightSweep at={70} />
+      <Flash at={44} len={5} color="#fff" max={0.35} />
       <Flash at={81} len={8} color="#fff" max={0.3} />
     </AbsoluteFill>
   );

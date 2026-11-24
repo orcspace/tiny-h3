@@ -1,6 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, useCurrentFrame} from 'remotion';
 import {Flash, Slam, Slot} from '../components';
+import {LightSweep, Shockwave, Stagger} from '../motion';
 import {C, FONT, W, lerp, lin, shake} from '../lib';
 
 const CUTS = [
@@ -78,6 +79,9 @@ export const S4Katana: React.FC = () => {
         0{idx + 1} / 03
       </div>
 
+      {CUTS.map((c) => (
+        <Shockwave key={'s' + c.id} at={c.at + 2} x={420} y={1080 - 260} rings={2} />
+      ))}
       {CUTS.map((c) => (
         <Flash key={c.id} at={c.at} len={4} color={c.at === 24 ? C.hot : '#fff'} max={0.9} />
       ))}

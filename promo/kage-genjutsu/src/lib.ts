@@ -23,6 +23,7 @@ export const C = {
 
 export const FONT = {
   display: 'Anton, "Bebas Neue", Impact, sans-serif',
+  wide: '"Archivo Black", "Arial Black", sans-serif',
   ui: 'Inter, "Helvetica Neue", Arial, sans-serif',
 };
 

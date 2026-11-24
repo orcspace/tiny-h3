@@ -1,6 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, spring, useCurrentFrame, useVideoConfig} from 'remotion';
 import {Flash, InkBackground, Slam, Slot, zoomIn} from '../components';
+import {LightSweep, Shockwave, Stagger} from '../motion';
 import {C, FONT, H, W, aberration, lerp, lin, punch, shake} from '../lib';
 
 const CARD_W = 760;
@@ -170,6 +171,8 @@ export const S3Mirror: React.FC = () => {
           style={{filter: `drop-shadow(0 0 18px ${C.hot})`}}
         />
       </svg>
+      <Shockwave at={SLASH + 1} x={W / 2} y={H - 125} />
+      <LightSweep at={76} />
       <Flash at={SLASH} len={6} color="#fff" max={0.5} />
     </AbsoluteFill>
     </AbsoluteFill>

@@ -1,6 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, useCurrentFrame} from 'remotion';
 import {Flash, Reveal, Slam, Slot, Smoke} from '../components';
+import {LightSweep, Shockwave, Stagger} from '../motion';
 import {C, FONT, H, W, lerp, lin, punch, shake} from '../lib';
 
 // 0.0–2.4 s: black, drum hit, the shadow tears off the wall, KAGE slams in. Leaves with a whip pan.
@@ -63,6 +64,8 @@ export const S1Shadow: React.FC = () => {
         }}
       />
 
+      <Shockwave at={8} />
+      <LightSweep at={38} />
       <Flash at={4} len={5} />
       <Flash at={26} len={6} color={C.crimson} max={0.45} />
     </AbsoluteFill>

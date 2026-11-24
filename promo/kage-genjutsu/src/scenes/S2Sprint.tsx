@@ -1,6 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, Easing, useCurrentFrame} from 'remotion';
 import {Slam, Slot, SpeedLines, zoomOut} from '../components';
+import {LightSweep, Shockwave, Stagger} from '../motion';
 import {C, FONT, W, lerp, lin, punch, shake} from '../lib';
 
 // 2.1–4.5 s: whip in, speed-ramped sprint, EVERY / SHADOW / HIDES A STORY on the beats.
@@ -50,12 +51,14 @@ export const S2Sprint: React.FC = () => {
                 color: C.white,
               }}
             >
-              HIDES A STORY
+              <Stagger text="HIDES A STORY" at={41} />
             </div>
             <div style={{height: 6, width: 520 * under, background: C.hot, marginTop: 12, boxShadow: `0 0 18px ${C.hot}`}} />
           </div>
         )}
       </div>
+      <Shockwave at={28} x={520} y={420} />
+      <LightSweep at={50} />
     </AbsoluteFill>
     </AbsoluteFill>
   );

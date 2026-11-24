@@ -41,6 +41,7 @@ export const Slot: React.FC<{id: string; label: string; style?: React.CSSPropert
   position = 'center',
 }) => {
   const {keyMode, labels} = useMode();
+  const kf = useCurrentFrame();
   const clip = CLIPS[id];
   const look = LOOKS[clip?.look ?? 'grade'];
   return (
@@ -56,7 +57,8 @@ export const Slot: React.FC<{id: string; label: string; style?: React.CSSPropert
               height: '100%',
               objectFit: clip.fit ?? 'cover',
               objectPosition: position,
-              transform: clip.mirror ? 'scaleX(-1)' : undefined,
+              // slow Ken Burns drift on every shot: nothing on screen is ever static
+              transform: `scale(${1.05 + kf * 0.0016}) translate(${Math.sin(kf / 40 + id.length) * 14}px, ${Math.cos(kf / 50) * 8}px)${clip.mirror ? ' scaleX(-1)' : ''}`,
               filter: keyMode ? undefined : look.filter,
             }}
           />
